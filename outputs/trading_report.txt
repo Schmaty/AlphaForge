@@ -1,0 +1,139 @@
+================================================================================
+                  AI STOCK TRADER — REAL DATA BACKTEST REPORT                   
+                         Generated: 2026-03-18 19:35:00                         
+================================================================================
+
+1. EXECUTIVE SUMMARY
+----------------------------------------
+  Verdict:              BEAT the S&P 500
+  Alpha:                +16.44%
+  Strategy Return:      73.87%
+  Benchmark Return:     57.43%
+  Strategy Sharpe:      1.374
+  Benchmark Sharpe:     1.068
+
+  Universe:             AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, JPM, V, JNJ, UNH, XOM, PG, HD, MA, LLY, ABBV, MRK, AVGO, PEP
+  Number of stocks:     20
+
+2. DETAILED METRICS
+----------------------------------------
+  Strategy CAGR                      0.2706
+  Benchmark CAGR                     0.2171
+  Strategy Volatility                0.1542
+  Benchmark Volatility               0.1586
+  Strategy Sortino                   1.8930
+  Benchmark Sortino                  1.3736
+  Strategy Max DD                   -0.1648
+  Benchmark Max DD                  -0.1876
+  Strategy Calmar                    1.6419
+  Benchmark Calmar                   1.1576
+
+3. TRADE STATISTICS
+----------------------------------------
+  Total Trades:         773
+  Win Rate:             50.5%
+  Profit Factor:        1.01
+  Avg Trade Return:     0.0023%
+
+4. RECENT TRADES (last 40)
+----------------------------------------
+  Date         Ticker   Side             Shares        Price
+  ──────────── ──────── ────────── ──────────── ────────────
+  2025-11-19   V        BUY               14.35 $     323.45
+  2025-11-19   JNJ      SELL             -42.81 $     200.17
+  2025-11-19   UNH      BUY               20.70 $     304.66
+  2025-11-19   PG       SELL             -30.66 $     145.95
+  2025-11-19   HD       BUY               37.78 $     330.14
+  2025-11-19   LLY      SELL              -3.83 $    1047.85
+  2025-11-19   MRK      SELL             -64.30 $      93.55
+  2025-11-19   PEP      SELL             -28.03 $     144.40
+  2025-11-26   MSFT     BUY                9.89 $     484.39
+  2025-11-26   GOOGL    SELL             -14.89 $     319.52
+  2025-11-26   NVDA     BUY               40.54 $     180.24
+  2025-11-26   META     SELL              -7.78 $     632.55
+  2025-11-26   UNH      SELL             -11.87 $     324.98
+  2025-11-26   XOM      BUY               43.62 $     114.01
+  2025-11-26   PG       BUY               34.81 $     147.20
+  2025-11-26   HD       SELL             -15.08 $     350.84
+  2025-11-26   MRK      SELL             -63.53 $     102.98
+  2025-11-26   AVGO     SELL             -23.53 $     396.81
+  2025-11-26   PEP      BUY               28.21 $     145.25
+  2025-12-04   GOOGL    BUY               16.67 $     317.19
+  2025-12-04   META     SELL              -9.32 $     660.43
+  2025-12-04   TSLA     SELL             -10.91 $     454.53
+  2025-12-04   HD       SELL             -24.93 $     348.84
+  2025-12-04   LLY      BUY                5.79 $    1012.80
+  2025-12-04   MRK      BUY               58.63 $      99.30
+  2025-12-04   AVGO     BUY               20.14 $     380.30
+  2025-12-11   MSFT     SELL             -13.34 $     482.37
+  2025-12-11   TSLA     BUY               11.16 $     446.89
+  2025-12-11   HD       BUY               13.53 $     355.09
+  2025-12-11   LLY      BUY                4.86 $    1007.70
+  2025-12-11   ABBV     BUY               17.81 $     222.19
+  2025-12-11   AVGO     SELL             -22.87 $     405.59
+  2025-12-18   MSFT     BUY               10.75 $     482.88
+  2025-12-18   TSLA     SELL             -20.45 $     483.37
+  2025-12-18   JPM      BUY               11.69 $     311.59
+  2025-12-18   V        SELL             -11.73 $     345.30
+  2025-12-18   UNH      SELL             -13.87 $     325.61
+  2025-12-18   XOM      SELL             -34.80 $     115.77
+  2025-12-18   LLY      SELL              -7.57 $    1055.12
+  2025-12-18   AVGO     BUY               59.58 $     329.25
+
+5. MONTHLY RETURNS
+----------------------------------------
+  Month          Return
+  ────────── ──────────
+  2023-09        -3.59%
+  2023-10        -2.21%
+  2023-11        +7.20%
+  2023-12        +3.95%
+  2024-01        +2.04%
+  2024-02        +6.69%
+  2024-03        +2.17%
+  2024-04        -3.15%
+  2024-05        +3.87%
+  2024-06        +3.46%
+  2024-07        +2.39%
+  2024-08        +2.30%
+  2024-09        +3.09%
+  2024-10        +0.54%
+  2024-11        +5.86%
+  2024-12        -0.72%
+  2025-01        +5.63%
+  2025-02        -0.62%
+  2025-03        -4.97%
+  2025-04        -1.75%
+  2025-05        +4.15%
+  2025-06        +3.77%
+  2025-07        +2.47%
+  2025-08        +5.04%
+  2025-09        +3.56%
+  2025-10        +2.97%
+  2025-11        +2.22%
+  2025-12        +0.63%
+
+6. DRAWDOWN ANALYSIS
+----------------------------------------
+  Worst Drawdown:       -16.48% on 2025-04-08
+  Recovery:             93 days
+
+7. RISK-ADJUSTED ANALYSIS
+----------------------------------------
+  Information Ratio:    16.442
+  Treynor Ratio:        0.2306
+  Return/MaxDD:         4.48
+
+8. METHODOLOGY
+----------------------------------------
+  Data:                 REAL historical prices (yfinance)
+  Benchmark:            SPY (S&P 500 ETF)
+  Normalisation:        Train-only Z-scoring (no look-ahead)
+  Target:               Raw forward 5-day price return
+  Model:                Ensemble MLP (pure NumPy, Adam optimiser)
+  Rebalancing:          Weekly, fully invested, softmax weights
+  Costs:                10 bps per trade
+
+================================================================================
+                                 END OF REPORT                                  
+================================================================================
