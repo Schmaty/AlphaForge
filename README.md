@@ -1,24 +1,28 @@
 # AlphaForge 🔥
 
-> A pure-NumPy AI stock trader that **beat the S&P 500 by +16.44%** on real out-of-sample data — no PyTorch, no TensorFlow, no scikit-learn.
+> A pure-NumPy AI stock trader that **beat the S&P 500 by +29.47%** on the current out-of-sample report — no PyTorch, no TensorFlow, no scikit-learn.
 
-AlphaForge trains an ensemble of neural networks entirely from scratch in NumPy, computes 41 technical indicators per stock, and runs a fully-invested weekly-rebalancing portfolio across 20 large-cap equities. The backtest uses **real historical prices** from Yahoo Finance, a clean temporal train/test split, and no look-ahead bias.
+AlphaForge trains an ensemble of neural networks entirely from scratch in NumPy, computes 50+ technical features per stock, and runs a monthly-rebalanced portfolio across 20 large-cap equities with a momentum-led signal blend and long/short overlay. The backtest uses **real historical prices** from Yahoo Finance, a clean temporal train/test split, and no look-ahead bias.
 
 ---
 
-## Results (Out-of-Sample, 2023–2025)
+## Results (Current Out-of-Sample Report, 2023–2025)
 
 | Metric | AlphaForge | S&P 500 (SPY) |
 |---|---|---|
-| **Total Return** | **73.87%** | 57.43% |
-| **CAGR** | **27.06%** | 21.71% |
-| **Sharpe Ratio** | **1.374** | 1.068 |
-| **Sortino Ratio** | **1.893** | 1.374 |
-| **Max Drawdown** | **-16.48%** | -18.76% |
-| **Calmar Ratio** | **1.642** | 1.158 |
-| Annualised Vol | 15.42% | 15.86% |
+| **Total Return** | **88.18%** | 58.71% |
+| **CAGR** | **31.93%** | 22.44% |
+| **Sharpe Ratio** | **1.131** | 1.101 |
+| **Sortino Ratio** | **1.689** | 1.414 |
+| **Max Drawdown** | -30.69% | **-18.76%** |
+| **Calmar Ratio** | 1.040 | **1.196** |
+| Annualised Vol | 23.44% | 15.94% |
 
-*Trained on 2018–2023 real OHLCV data. Tested on unseen 2023–2025 data. 10 bps transaction costs applied.*
+- **Alpha vs SPY:** `+29.47%`
+- **Performance grade:** `A`
+- **Trade stats:** `396` trades, `55.9%` win rate, `1.25` profit factor
+
+*Source: current `outputs/trading_report.txt`, generated `2026-03-19`. Trained on 2018–2023 real OHLCV data, tested on unseen late-2023–2025 data, with 10 bps transaction costs applied.*
 
 ---
 
@@ -28,27 +32,29 @@ AlphaForge trains an ensemble of neural networks entirely from scratch in NumPy,
 Real OHLCV Data (yfinance)
         │
         ▼
-41 Technical Features per stock
+50+ Technical Features per stock
 (Returns, SMAs, EMAs, MACD, RSI, Bollinger,
- ATR, Stochastic, CCI, OBV, MFI, Vol, Momentum)
+ ATR, Stochastic, CCI, OBV, MFI, Vol, Momentum,
+ trend strength, channel position, 52-week high proximity)
         │
         ▼
 Temporal Train/Test Split (70/30)
 Train-only Z-score Normalisation  ← no look-ahead
         │
         ▼
-Sliding Window Sequences (40 days → 1,640-dim input)
+Sliding Window Sequences (20 trading days)
 Target = raw forward 5-day price return  ← no bias
         │
         ▼
-Ensemble of 3 × MLP [1640→256→128→64→1]
+Ensemble of 3 × MLP [input→512→256→128→64→1]
 Adam Optimiser | Huber Loss | Dropout | Early Stopping
 Bootstrap Sampling per model
         │
         ▼
-Signal → Softmax Portfolio Weights
-60% model tilt + 40% equal weight
-Weekly Rebalancing | Always Fully Invested
+Signal blend → softmax portfolio weights
+80% momentum + 20% calibrated ML model
+Monthly Rebalancing | Long/Short Overlay | 25% max position
+18% stop-loss | 45% take-profit | 20% portfolio DD breaker
         │
         ▼
 Backtest on Real Prices → vs SPY
@@ -59,7 +65,7 @@ Backtest on Real Prices → vs SPY
 ## Project Structure
 
 ```
-alphaforge/
+.
 ├── main.py          # Entry point — loads data, trains, backtests, prints results
 ├── backtest.py      # Evaluation suite — walk-forward CV, Monte Carlo, sensitivity
 ├── utils.py         # All logic — data loading, features, MLP, backtest engine, charts
@@ -128,16 +134,20 @@ END_DATE   = "2025-12-31"
 TEST_SPLIT = 0.30                            # 30% held out for testing
 
 # Model
-HIDDEN_LAYERS = [256, 128, 64]              # MLP architecture
+HIDDEN_LAYERS = [512, 256, 128, 64]         # MLP architecture
 EPOCHS        = 50
 LEARNING_RATE = 5e-4
-DROPOUT       = 0.25
+DROPOUT       = 0.30
 ENSEMBLE_MODELS = 3                         # number of models to average
 
 # Portfolio
-MAX_POSITION_PCT    = 0.15                  # max weight per stock
+MAX_POSITION_PCT    = 0.25                  # max weight per stock
 TRANSACTION_COST_BPS = 10                   # 10 basis points per trade
-LOOKBACK_WINDOW     = 40                    # days of history fed to model
+LOOKBACK_WINDOW     = 20                    # days of history fed to model
+MOMENTUM_WEIGHT     = 0.80                  # primary signal weight
+MODEL_WEIGHT        = 0.20                  # ML overlay weight
+ALLOW_SHORT         = True                  # long/short mode enabled
+REBALANCE_DAYS      = 20                    # monthly rebalancing
 ```
 
 ---
@@ -175,7 +185,7 @@ Running `main.py` produces:
 
 **Terminal** — live training progress bars, signal quality stats, and a formatted comparison table vs SPY.
 
-**`outputs/trading_report.txt`** — 8-section report: executive summary, detailed metrics, trade statistics, recent trades, monthly returns, drawdown analysis, risk-adjusted stats, methodology notes.
+**`outputs/trading_report.txt`** — 9-section report: executive summary, detailed metrics, trade statistics, recent trades, monthly returns, drawdown analysis, risk-adjusted analysis, risk controls, and methodology notes.
 
 **`outputs/trading_charts.png`** — 6-panel dark-theme chart:
 1. Equity curve vs SPY
