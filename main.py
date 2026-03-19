@@ -170,7 +170,7 @@ def main():
     test_tickers_list = [t for t, m in zip(all_tickers_list, test_mask) if m]
 
     # Train / val split (within training period)
-    val_split = int(len(X_train_full) * 0.82)
+    val_split = int(len(X_train_full) * cfg.VAL_SPLIT_RATIO)
     X_tr, X_val = X_train_full[:val_split], X_train_full[val_split:]
     y_tr, y_val = y_train_full[:val_split], y_train_full[val_split:]
 

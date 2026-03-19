@@ -3,3 +3,5 @@
 .claude-flow
 __pycache__
 *.pyc
+outputs/
+.mcp.json

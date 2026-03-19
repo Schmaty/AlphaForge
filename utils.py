@@ -15,10 +15,8 @@ BIAS FIXES vs v1:
 """
 
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Dict
 
 import numpy as np
 import pandas as pd
@@ -447,7 +445,7 @@ class NumpyMLP:
 
 def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
     """Train a single MLP with early stopping."""
-    import config as cfg_mod
+    cfg_mod = cfg  # use the passed config module directly
 
     n_features = X_train.shape[1]
     layers = [n_features] + cfg_mod.HIDDEN_LAYERS + [1]
@@ -514,7 +512,8 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
         lr *= cfg_mod.LR_DECAY
 
     print(f"\n    ✓  Best val loss: {best_val_loss:.6f}")
-    model.set_params(best_params)
+    if best_params is not None:
+        model.set_params(best_params)
     return model
 
 
@@ -524,22 +523,34 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
 
 def run_backtest(predictions, prices, benchmark, cfg_mod):
     """
-    Fully-invested portfolio backtest on real stock prices.
-    The model determines WEIGHTS across tickers (long-only with tilts).
+    Portfolio backtest on real stock prices. Supports long-only and long/short.
+
+    Long/short mode:
+      - Stocks with positive signals get long weights
+      - Stocks with negative signals get short weights (negative shares)
+      - Short P&L: profit when price falls, loss when price rises
+      - Gross exposure capped at GROSS_LEVERAGE
+      - Net exposure kept within NET_EXPOSURE_RANGE
+
     Rebalances weekly. Includes transaction costs.
     """
     tickers = predictions.columns.tolist()
     dates = predictions.index
     n_tickers = len(tickers)
     cost_mult = cfg_mod.TRANSACTION_COST_BPS / 10_000
+    allow_short = getattr(cfg_mod, 'ALLOW_SHORT', False)
 
     initial_capital = 1_000_000.0
-    holdings = {}
+    cash = initial_capital
+    holdings = {t: 0.0 for t in tickers}  # shares (negative = short)
+
+    # Initial equal-weight long allocation
     equal_w = 1.0 / n_tickers
     for t in tickers:
         price = prices.loc[dates[0], t]
         alloc = initial_capital * equal_w
         holdings[t] = alloc / price
+        cash -= alloc
 
     portfolio_values = []
     trade_log = []
@@ -549,7 +560,10 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
         if date not in prices.index:
             continue
 
-        port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers)
+        # NAV = cash + long value - short value
+        # For shorts: holdings[t] < 0, so holdings[t] * price < 0
+        # NAV = cash + sum(holdings[t] * price) — works for both long and short
+        nav = cash + sum(holdings[t] * prices.loc[date, t] for t in tickers)
 
         rebal_counter += 1
         if rebal_counter >= 5 and i < len(dates) - 1:
@@ -559,18 +573,27 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
 
             for t in tickers:
                 price = prices.loc[date, t]
-                target_shares = (port_val * target_w[t]) / price
+                target_dollar = nav * target_w[t]  # negative for shorts
+                target_shares = target_dollar / price
                 diff_shares = target_shares - holdings[t]
 
-                if abs(diff_shares * price) > port_val * 0.002:
+                if abs(diff_shares * price) > nav * 0.002:
                     trade_cost = abs(diff_shares * price) * cost_mult
-                    port_val -= trade_cost
+                    cash -= trade_cost
+
+                    # Update cash: selling shares gives cash, buying costs cash
+                    # For shorts: selling shares we don't own gives cash (short proceeds)
+                    cash -= diff_shares * price
                     holdings[t] = target_shares
-                    side = "BUY" if diff_shares > 0 else "SELL"
+
+                    if diff_shares > 0:
+                        side = "BUY" if target_shares > 0 else "COVER"
+                    else:
+                        side = "SELL" if holdings[t] >= 0 else "SHORT"
                     trade_log.append((date, t, side, diff_shares, price))
 
-        port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers)
-        portfolio_values.append({"date": date, "portfolio": port_val})
+        nav = cash + sum(holdings[t] * prices.loc[date, t] for t in tickers)
+        portfolio_values.append({"date": date, "portfolio": nav})
 
     pv = pd.DataFrame(portfolio_values).set_index("date")
     pv["benchmark"] = benchmark.reindex(pv.index).ffill()
@@ -583,25 +606,100 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
 def _signal_to_weights(signals, tickers, cfg_mod):
     """
     Convert model signals to portfolio weights.
-    Always fully invested (weights sum to 1.0).
+
+    Long-only mode (ALLOW_SHORT=False):
+        Softmax over all signals → all positive weights summing to 1.0
+
+    Long/short mode (ALLOW_SHORT=True):
+        - Positive signals → long weights
+        - Negative signals → short weights (negative values)
+        - Net exposure kept within NET_EXPOSURE_RANGE
+        - Gross exposure capped at GROSS_LEVERAGE
     """
     n = len(tickers)
-    base_w = 1.0 / n
-
     scores = np.array([signals.get(t, 0.0) for t in tickers])
+    allow_short = getattr(cfg_mod, 'ALLOW_SHORT', False)
 
-    # Softmax-like transformation for weight tilts
-    scale = 5.0
+    if not allow_short:
+        # ── Long-only: softmax weights ────────────────────────────
+        base_w = 1.0 / n
+        scale = getattr(cfg_mod, 'SOFTMAX_SCALE', 5.0)
+        scores_scaled = np.clip(scale * scores, -20, 20)
+        exp_scores = np.exp(scores_scaled)
+        model_weights = exp_scores / exp_scores.sum()
+
+        blend = getattr(cfg_mod, 'SIGNAL_BLEND', 0.60)
+        final_weights = (1 - blend) * base_w + blend * model_weights
+        final_weights = np.clip(final_weights, 0.005, cfg_mod.MAX_POSITION_PCT)
+        final_weights = final_weights / final_weights.sum()
+        return {t: w for t, w in zip(tickers, final_weights)}
+
+    # ── Long/Short mode ───────────────────────────────────────────
+    # Strategy: start from the proven long-only softmax allocation,
+    # then add a small short overlay on the bottom-ranked stocks.
+    # This preserves the long book's alpha while extracting extra
+    # returns from shorting the weakest signals.
+    short_scale = getattr(cfg_mod, 'SHORT_SCALE', 0.20)
+    max_short = getattr(cfg_mod, 'MAX_SHORT_PCT', 0.06)
+    gross_cap = getattr(cfg_mod, 'GROSS_LEVERAGE', 1.20)
+    net_min, net_max = getattr(cfg_mod, 'NET_EXPOSURE_RANGE', (0.70, 1.10))
+    n_short = getattr(cfg_mod, 'N_SHORT', 4)  # only short bottom N stocks
+
+    # ── Step 1: Build long book using proven softmax approach ──
+    base_w = 1.0 / n
+    scale = getattr(cfg_mod, 'SOFTMAX_SCALE', 5.0)
     scores_scaled = np.clip(scale * scores, -20, 20)
     exp_scores = np.exp(scores_scaled)
     model_weights = exp_scores / exp_scores.sum()
 
-    # Blend: 40% equal weight + 60% model signal
-    blend = 0.60
-    final_weights = (1 - blend) * base_w + blend * model_weights
+    blend = getattr(cfg_mod, 'SIGNAL_BLEND', 0.60)
+    long_weights = (1 - blend) * base_w + blend * model_weights
+    long_weights = np.clip(long_weights, 0.005, cfg_mod.MAX_POSITION_PCT)
+    long_weights = long_weights / long_weights.sum()
 
-    final_weights = np.clip(final_weights, 0.005, cfg_mod.MAX_POSITION_PCT)
-    final_weights = final_weights / final_weights.sum()
+    # ── Step 2: Build small short overlay on worst-ranked stocks ──
+    short_weights = np.zeros(n)
+    rank_order = np.argsort(scores)  # indices sorted worst→best
+    bottom_idx = rank_order[:n_short]
+
+    # Use signal deviation below median as short conviction
+    median_score = np.median(scores)
+    for idx in bottom_idx:
+        deviation = median_score - scores[idx]
+        if deviation > 0:
+            short_weights[idx] = deviation
+
+    # Normalise short weights to sum to short_scale
+    sw_sum = short_weights.sum()
+    if sw_sum > 1e-10:
+        short_weights = short_weights / sw_sum * short_scale
+        # Cap individual short positions
+        short_weights = np.clip(short_weights, 0, max_short)
+        # Re-normalise after clipping
+        sw_sum2 = short_weights.sum()
+        if sw_sum2 > short_scale:
+            short_weights = short_weights / sw_sum2 * short_scale
+
+    # ── Step 3: Combine long and short books ──
+    final_weights = long_weights - short_weights
+
+    # Enforce gross exposure cap
+    gross = np.abs(final_weights).sum()
+    if gross > gross_cap:
+        final_weights = final_weights * (gross_cap / gross)
+
+    # Enforce net exposure range
+    net = final_weights.sum()
+    if net < net_min:
+        deficit = net_min - net
+        long_idx = final_weights > 0
+        if long_idx.any():
+            final_weights[long_idx] += deficit * (final_weights[long_idx] / final_weights[long_idx].sum())
+    elif net > net_max:
+        excess = net - net_max
+        short_idx = final_weights < 0
+        if short_idx.any():
+            final_weights[short_idx] -= excess * (np.abs(final_weights[short_idx]) / np.abs(final_weights[short_idx]).sum())
 
     return {t: w for t, w in zip(tickers, final_weights)}
 
@@ -649,16 +747,23 @@ def compute_metrics(portfolio, trades):
 
     nt = len(trades)
     if nt > 0:
-        tv = trades["shares"] * trades["price"]
-        wr = (tv > 0).mean()
-        gp = tv[tv > 0].sum()
-        gl = abs(tv[tv <= 0].sum())
-        pf = gp / max(gl, 1)
+        tv = abs(trades["shares"] * trades["price"])
         ar = tv.mean() / max(strat.iloc[0], 1)
     else:
-        wr = pf = ar = 0
+        ar = 0
+
+    # Win rate and profit factor from daily portfolio returns
+    # (trade log lacks per-position entry/exit P&L for true win rate)
+    pos_days = sd[sd > 0]
+    neg_days = sd[sd < 0]
+    wr = (sd > 0).mean()
+    gp = pos_days.sum()
+    gl = abs(neg_days.sum())
+    pf = gp / max(gl, 1e-10)
 
     rs = (sd.rolling(63).mean() * 252 - rf) / (sd.rolling(63).std() * np.sqrt(252)).replace(0, 1)
+    tracking_diff = sd - bd.reindex(sd.index).fillna(0)
+    tracking_error = max(tracking_diff.std() * np.sqrt(252), 0.001)
 
     return {
         "strategy_return": strat_ret, "benchmark_return": bench_ret,
@@ -670,6 +775,7 @@ def compute_metrics(portfolio, trades):
         "strategy_calmar": s_cal, "benchmark_calmar": b_cal,
         "win_rate": wr, "profit_factor": pf,
         "total_trades": nt, "avg_trade_return": ar,
+        "tracking_error": tracking_error,
         "rolling_sharpe": rs, "strat_daily": sd, "bench_daily": bd,
     }
 
@@ -756,8 +862,8 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
 
     L.append("\n7. RISK-ADJUSTED ANALYSIS")
     L.append("-" * 40)
-    vol_diff = max(abs(metrics['strategy_vol'] - metrics['benchmark_vol']), 0.01)
-    L.append(f"  Information Ratio:    {alpha / vol_diff:.3f}")
+    tracking_error = metrics.get('tracking_error', max(abs(metrics['strategy_vol'] - metrics['benchmark_vol']), 0.01))
+    L.append(f"  Information Ratio:    {alpha / tracking_error:.3f}")
     L.append(f"  Treynor Ratio:        {(metrics['strategy_cagr'] - 0.04):.4f}")
     L.append(f"  Return/MaxDD:         {abs(metrics['strategy_return'] / min(metrics['strategy_max_dd'], -0.001)):.2f}")
 

@@ -89,8 +89,21 @@ BOOTSTRAP_RATIO    = 0.85      # fraction of train data each model sees
 SIGNAL_THRESHOLD   = 0.005     # minimum predicted score to trigger trade
 POSITION_SIZING    = "risk_parity"   # "equal" | "risk_parity" | "momentum"
 MAX_POSITION_PCT   = 0.15      # max weight per ticker
+SOFTMAX_SCALE      = 5.0       # scale factor for softmax signal weighting (long-only)
+SIGNAL_BLEND       = 0.60      # blend: 60% model weights, 40% equal weight
+VAL_SPLIT_RATIO    = 0.82      # train vs. validation split within training period
+
+# ── Long/Short Mode ──────────────────────────────────────────────────────────
+ALLOW_SHORT        = True      # True = long/short, False = long-only
+SHORT_SCALE        = 0.20      # fraction of capital allocated to short book
+MAX_SHORT_PCT      = 0.06      # max short weight per ticker
+N_SHORT            = 4         # number of bottom-ranked stocks to short
+GROSS_LEVERAGE     = 1.20      # max gross exposure (long + |short|)
+NET_EXPOSURE_RANGE = (0.70, 1.10)  # (min, max) net long exposure
 
 # ── Risk Management ───────────────────────────────────────────────────────────
+# NOTE: STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_PORTFOLIO_DRAWDOWN are defined here
+# but are not yet enforced in the backtest engine (run_backtest in utils.py).
 STOP_LOSS_PCT          = 0.06
 TAKE_PROFIT_PCT        = 0.18
 MAX_PORTFOLIO_DRAWDOWN = 0.12

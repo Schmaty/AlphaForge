@@ -41,7 +41,7 @@ from utils import (
     colour,
 )
 
-OUTPUT = Path("outputs")
+OUTPUT = cfg.OUTPUT_DIR
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,68 +184,70 @@ def test_walk_forward(quick=False):
 
     orig_epochs = cfg.EPOCHS
     orig_ens = cfg.ENSEMBLE_MODELS
-    cfg.EPOCHS = 15 if quick else 30
-    cfg.ENSEMBLE_MODELS = 1
-
     results = []
-    for f in range(2, 2 + n_folds):
-        train_end_date = common[f * fold_size]
-        test_start = f * fold_size
-        test_end = min((f + 1) * fold_size, len(common))
-        test_date_set = set(common[test_start:test_end])
+    try:
+        cfg.EPOCHS = 15 if quick else 30
+        cfg.ENSEMBLE_MODELS = 1
 
-        if len(test_date_set) < 20:
-            continue
+        for f in range(2, 2 + n_folds):
+            train_end_date = common[f * fold_size]
+            test_start = f * fold_size
+            test_end = min((f + 1) * fold_size, len(common))
+            test_date_set = set(common[test_start:test_end])
 
-        # Per-fold normalisation: fit on train only
-        all_X, all_y = [], []
-        all_X_te, all_y_te = [], []
+            if len(test_date_set) < 20:
+                continue
 
-        for t in tickers:
-            raw = raw_frames[t]
-            train_rows = raw.loc[raw.index <= train_end_date]
-            mu, sigma = fit_normalisation(train_rows)
-            normed = apply_normalisation(raw, mu, sigma)
-            close_raw = data["Close"][t]
+            # Per-fold normalisation: fit on train only
+            all_X, all_y = [], []
+            all_X_te, all_y_te = [], []
 
-            X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW, fwd_days=5)
+            for t in tickers:
+                raw = raw_frames[t]
+                train_rows = raw.loc[raw.index <= train_end_date]
+                mu, sigma = fit_normalisation(train_rows)
+                normed = apply_normalisation(raw, mu, sigma)
+                close_raw = data["Close"][t]
 
-            for i, d in enumerate(dates_seq):
-                if d <= train_end_date:
-                    all_X.append(X[i])
-                    all_y.append(y[i])
-                elif d in test_date_set:
-                    all_X_te.append(X[i])
-                    all_y_te.append(y[i])
+                X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW, fwd_days=5)
 
-        Xtr = np.array(all_X)
-        ytr = np.array(all_y)
-        Xte = np.array(all_X_te)
-        yte = np.array(all_y_te)
+                for i, d in enumerate(dates_seq):
+                    if d <= train_end_date:
+                        all_X.append(X[i])
+                        all_y.append(y[i])
+                    elif d in test_date_set:
+                        all_X_te.append(X[i])
+                        all_y_te.append(y[i])
 
-        if len(Xtr) < 100 or len(Xte) < 20:
-            continue
+            Xtr = np.array(all_X)
+            ytr = np.array(all_y)
+            Xte = np.array(all_X_te)
+            yte = np.array(all_y_te)
 
-        # Remove NaN
-        mask = ~(np.isnan(Xtr).any(axis=1) | np.isnan(ytr))
-        Xtr, ytr = Xtr[mask], ytr[mask]
-        mask = ~(np.isnan(Xte).any(axis=1) | np.isnan(yte))
-        Xte, yte = Xte[mask], yte[mask]
+            if len(Xtr) < 100 or len(Xte) < 20:
+                continue
 
-        val_n = int(len(Xtr) * 0.85)
-        model = train_model(Xtr[:val_n], ytr[:val_n], Xtr[val_n:], ytr[val_n:], 0, cfg)
+            # Remove NaN
+            mask = ~(np.isnan(Xtr).any(axis=1) | np.isnan(ytr))
+            Xtr, ytr = Xtr[mask], ytr[mask]
+            mask = ~(np.isnan(Xte).any(axis=1) | np.isnan(yte))
+            Xte, yte = Xte[mask], yte[mask]
 
-        preds = model.predict(Xte)
-        corr = np.corrcoef(preds, yte)[0, 1] if len(preds) > 1 else 0
-        mse = np.mean((preds - yte)**2)
-        dir_acc = np.mean(np.sign(preds) == np.sign(yte))
+            val_n = int(len(Xtr) * 0.85)
+            model = train_model(Xtr[:val_n], ytr[:val_n], Xtr[val_n:], ytr[val_n:], 0, cfg)
 
-        results.append({"fold": f-1, "train": len(Xtr), "test": len(Xte),
-                        "corr": corr, "mse": mse, "dir_acc": dir_acc})
-        print(f"\n    Fold {f-1}: corr={corr:.4f}  mse={mse:.6f}  dir_acc={dir_acc:.2%}")
+            preds = model.predict(Xte)
+            corr = np.corrcoef(preds, yte)[0, 1] if len(preds) > 1 else 0
+            mse = np.mean((preds - yte)**2)
+            dir_acc = np.mean(np.sign(preds) == np.sign(yte))
 
-    cfg.EPOCHS = orig_epochs
-    cfg.ENSEMBLE_MODELS = orig_ens
+            results.append({"fold": f-1, "train": len(Xtr), "test": len(Xte),
+                            "corr": corr, "mse": mse, "dir_acc": dir_acc})
+            print(f"\n    Fold {f-1}: corr={corr:.4f}  mse={mse:.6f}  dir_acc={dir_acc:.2%}")
+
+    finally:
+        cfg.EPOCHS = orig_epochs
+        cfg.ENSEMBLE_MODELS = orig_ens
 
     if results:
         print()
@@ -332,23 +334,24 @@ def test_sensitivity():
 
     results = []
     orig_t, orig_s = cfg.SIGNAL_THRESHOLD, cfg.POSITION_SIZING
-
-    for th in thresholds:
-        for sz in sizings:
-            cfg.SIGNAL_THRESHOLD = th
-            cfg.POSITION_SIZING = sz
-            try:
-                pv, tr = run_backtest(signals, prices, bench, cfg)
-                m = compute_metrics(pv, tr)
-                results.append({"threshold": th, "sizing": sz,
-                               "return": m["strategy_return"], "sharpe": m["strategy_sharpe"],
-                               "max_dd": m["strategy_max_dd"], "trades": m["total_trades"]})
-            except:
-                results.append({"threshold": th, "sizing": sz,
-                               "return": 0, "sharpe": 0, "max_dd": 0, "trades": 0})
-
-    cfg.SIGNAL_THRESHOLD = orig_t
-    cfg.POSITION_SIZING = orig_s
+    try:
+        for th in thresholds:
+            for sz in sizings:
+                cfg.SIGNAL_THRESHOLD = th
+                cfg.POSITION_SIZING = sz
+                try:
+                    pv, tr = run_backtest(signals, prices, bench, cfg)
+                    m = compute_metrics(pv, tr)
+                    results.append({"threshold": th, "sizing": sz,
+                                   "return": m["strategy_return"], "sharpe": m["strategy_sharpe"],
+                                   "max_dd": m["strategy_max_dd"], "trades": m["total_trades"]})
+                except Exception as e:
+                    print(f"    ✗  threshold={th}, sizing={sz}: {e}")
+                    results.append({"threshold": th, "sizing": sz,
+                                   "return": 0, "sharpe": 0, "max_dd": 0, "trades": 0})
+    finally:
+        cfg.SIGNAL_THRESHOLD = orig_t
+        cfg.POSITION_SIZING = orig_s
 
     table = [["Threshold", "Sizing", "Return", "Sharpe", "Max DD", "Trades"]]
     for r in results:
