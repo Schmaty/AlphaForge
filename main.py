@@ -180,9 +180,10 @@ def main():
 
     # ── 5. TRAINING ──────────────────────────────────────────────────────────
     print_section("5. ENSEMBLE TRAINING")
+    seed_offsets = [0, 17, 41, 73, 97, 131, 167, 199]  # prime offsets for max diversity
     models = []
     for i in range(cfg.ENSEMBLE_MODELS):
-        np.random.seed(42 + i * 13)
+        np.random.seed(42 + seed_offsets[i])
         n = len(X_tr)
         idx = np.random.choice(n, size=int(n * cfg.BOOTSTRAP_RATIO), replace=True)
         X_boot, y_boot = X_tr[idx], y_tr[idx]
@@ -193,29 +194,72 @@ def main():
 
     # ── 6. PREDICTION ────────────────────────────────────────────────────────
     print_section("6. GENERATING PREDICTIONS")
+
+    # ── Step 1: Validate model on val set to calibrate signal direction ──
+    val_preds = np.zeros(len(X_val))
+    for m in models:
+        val_preds += m.predict(X_val)
+    val_preds /= len(models)
+    val_corr = np.corrcoef(val_preds, y_val)[0, 1]
+    signal_flip = -1.0 if val_corr < 0 else 1.0
+    print_metric("Validation correlation", f"{val_corr:.4f}")
+    print_metric("Signal calibration", "FLIPPED (val corr < 0)" if signal_flip < 0 else "NORMAL")
+
+    # ── Step 2: Generate test predictions with calibrated direction ──
     preds = np.zeros(len(X_test))
     for m in models:
         preds += m.predict(X_test)
     preds /= len(models)
+    preds *= signal_flip  # flip if validation showed negative correlation
+
+    # Signal quality (calibrated model)
+    corr = np.corrcoef(preds, y_test)[0, 1]
+    dir_acc = np.mean(np.sign(preds) == np.sign(y_test))
+    print_metric("Test signal-target correlation", f"{corr:.4f}")
+    print_metric("Test direction accuracy", f"{dir_acc:.2%}")
+
+    # Z-score standardize
+    pred_mean = preds.mean()
+    pred_std = max(preds.std(), 1e-10)
+    preds_z = np.clip((preds - pred_mean) / pred_std, -3.0, 3.0)
 
     # Map back to (date, ticker)
     pred_df = pd.DataFrame({
         "date": test_dates_list,
         "ticker": test_tickers_list,
-        "pred": preds,
+        "pred": preds_z,
     })
-    pred_pivot = pred_df.pivot_table(index="date", columns="ticker", values="pred", aggfunc="mean")
-    pred_pivot = pred_pivot.reindex(columns=cfg.UNIVERSE).fillna(0.0)
+    model_pivot = pred_df.pivot_table(index="date", columns="ticker", values="pred", aggfunc="mean")
+    model_pivot = model_pivot.reindex(columns=cfg.UNIVERSE).fillna(0.0)
 
-    # Signal quality
-    corr = np.corrcoef(preds, y_test)[0, 1]
-    dir_acc = np.mean(np.sign(preds) == np.sign(y_test))
+    # ── Momentum overlay: proven alpha factor ──
+    print_section("6b. MOMENTUM OVERLAY")
+    mom_lookback = getattr(cfg, 'MOMENTUM_LOOKBACK', 60)
+    mom_weight = getattr(cfg, 'MOMENTUM_WEIGHT', 0.65)
+    mdl_weight = getattr(cfg, 'MODEL_WEIGHT', 0.35)
 
+    # Compute trailing momentum for each stock at each date
+    mom_signals = prices.pct_change(mom_lookback)
+    # Cross-sectional rank: on each date, rank stocks by momentum [0, 1]
+    mom_ranked = mom_signals.rank(axis=1, pct=True)
+    # Center to [-0.5, 0.5] so it's symmetric
+    mom_centered = mom_ranked - 0.5
+    # Align to test dates
+    mom_pivot = mom_centered.reindex(model_pivot.index).fillna(0.0)
+    mom_pivot = mom_pivot.reindex(columns=cfg.UNIVERSE).fillna(0.0)
+
+    # Also cross-sectionally rank the model signals per date
+    model_ranked = model_pivot.rank(axis=1, pct=True) - 0.5
+
+    # Blend: momentum + calibrated model
+    pred_pivot = mom_weight * mom_pivot + mdl_weight * model_ranked
+
+    print_metric("Momentum weight", f"{mom_weight:.0%}")
+    print_metric("Model weight", f"{mdl_weight:.0%}")
+    print_metric("Momentum lookback", f"{mom_lookback} days")
+    print_metric("Blended signal range",
+                 f"[{pred_pivot.values.min():.3f}, {pred_pivot.values.max():.3f}]")
     print_metric("Prediction days", len(pred_pivot))
-    print_metric("Signal-target correlation", f"{corr:.4f}")
-    print_metric("Direction accuracy", f"{dir_acc:.2%}")
-    print_metric("Mean signal", f"{preds.mean():.6f}")
-    print_metric("Signal std", f"{preds.std():.6f}")
 
     # ── 7. BACKTESTING ───────────────────────────────────────────────────────
     print_section("7. BACKTESTING ON REAL PRICES")
@@ -253,9 +297,90 @@ def main():
     print(f"  AI Strategy {verdict} the S&P 500 by {colour(f'{alpha:+.2%}', clr)}")
     print(f"  {'━' * 62}")
 
+    # ── 8a. WINNING / LOSING STREAKS ─────────────────────────────────────────
+    print_section("8a. WIN/LOSS STREAKS")
+    import itertools
+    daily_rets = metrics['strat_daily']
+    streaks_binary = (daily_rets > 0).astype(int)
+    max_win_streak = max(
+        (sum(1 for _ in g) for k, g in itertools.groupby(streaks_binary) if k == 1),
+        default=0,
+    )
+    max_loss_streak = max(
+        (sum(1 for _ in g) for k, g in itertools.groupby(streaks_binary) if k == 0),
+        default=0,
+    )
+    print_metric("Max winning streak", f"{max_win_streak} days")
+    print_metric("Max losing streak", f"{max_loss_streak} days")
+    win_pct = (daily_rets > 0).mean()
+    print_metric("Positive days", f"{(daily_rets > 0).sum()} / {len(daily_rets)} ({win_pct:.1%})")
+    avg_win = daily_rets[daily_rets > 0].mean() * 100
+    avg_loss = daily_rets[daily_rets < 0].mean() * 100
+    print_metric("Avg winning day", f"+{avg_win:.3f}%")
+    print_metric("Avg losing day", f"{avg_loss:.3f}%")
+    print_metric("Win/Loss magnitude", f"{abs(avg_win / avg_loss):.2f}x")
+
+    # ── 8b. ALPHA DECOMPOSITION ──────────────────────────────────────────────
+    print_section("8b. ALPHA DECOMPOSITION")
+    long_trades = trades[trades["side"].isin(["BUY", "SELL"])]
+    short_trades = trades[trades["side"].isin(["SHORT", "COVER", "STOP", "TAKE_PROFIT", "DELEVERAGE"])]
+    total_long = len(long_trades)
+    total_short = len(short_trades)
+    short_long_ratio = total_short / max(total_long, 1)
+    print_metric("Total long trades", f"{total_long:,}")
+    print_metric("Total short trades", f"{total_short:,}")
+    print_metric("Short/Long ratio", f"{short_long_ratio:.1%}")
+    tracking_error = metrics.get("tracking_error", 0.01)
+    info_ratio = alpha / max(tracking_error, 0.001)
+    print_metric("Tracking error", f"{tracking_error:.2%}")
+    print_metric("Information ratio", f"{info_ratio:.3f}")
+    print_metric("Alpha (annualised)", f"{alpha:+.2%}")
+
+    # ── 8c. RISK-ADJUSTED PERFORMANCE ────────────────────────────────────────
+    print_section("8c. RISK-ADJUSTED PERFORMANCE")
+    risk_rows = [
+        ["Metric", "Value", "Rating"],
+        [
+            "Sharpe Ratio",
+            f"{metrics['strategy_sharpe']:.3f}",
+            colour("Excellent", "g") if metrics['strategy_sharpe'] > 1.5
+            else colour("Good", "y") if metrics['strategy_sharpe'] > 1.0
+            else colour("Fair", "r"),
+        ],
+        [
+            "Sortino Ratio",
+            f"{metrics['strategy_sortino']:.3f}",
+            colour("Excellent", "g") if metrics['strategy_sortino'] > 2.0
+            else colour("Good", "y") if metrics['strategy_sortino'] > 1.5
+            else colour("Fair", "r"),
+        ],
+        [
+            "Max Drawdown",
+            f"{metrics['strategy_max_dd']:.2%}",
+            colour("Low Risk", "g") if abs(metrics['strategy_max_dd']) < 0.10
+            else colour("Moderate", "y") if abs(metrics['strategy_max_dd']) < 0.20
+            else colour("High", "r"),
+        ],
+        [
+            "Calmar Ratio",
+            f"{metrics['strategy_calmar']:.3f}",
+            colour("Excellent", "g") if metrics['strategy_calmar'] > 2.0
+            else colour("Good", "y") if metrics['strategy_calmar'] > 1.0
+            else colour("Fair", "r"),
+        ],
+        [
+            "Volatility",
+            f"{metrics['strategy_vol']:.2%}",
+            colour("Low", "g") if metrics['strategy_vol'] < 0.15
+            else colour("Moderate", "y") if metrics['strategy_vol'] < 0.25
+            else colour("High", "r"),
+        ],
+    ]
+    print_table(risk_rows)
+
     # ── 9. REPORTS & CHARTS ──────────────────────────────────────────────────
     print_section("9. GENERATING OUTPUTS")
-    generate_report(metrics, trades, portfolio, cfg.REPORT_PATH, tickers=cfg.UNIVERSE)
+    generate_report(metrics, trades, portfolio, cfg.REPORT_PATH, tickers=cfg.UNIVERSE, cfg_mod=cfg)
     print(f"  ✓  Report  → {cfg.REPORT_PATH}")
 
     plot_charts(portfolio, trades, metrics, cfg.CHART_PATH, cfg)

@@ -260,6 +260,51 @@ def add_features(close, high, low, volume):
     # Momentum scores
     d["mom_composite"] = (d["ret_5d"] + d["ret_10d"] + d["ret_20d"]) / 3
 
+    # ── New signal-strengthening features ─────────────────────────────────────
+
+    # Momentum rank (percentile of 20d return in rolling 60-day window)
+    d["momentum_rank_20d"] = d["ret_20d"].rolling(60).rank(pct=True)
+
+    # Price channel position — where price sits in its 50-day range [0,1]
+    roll_min_50 = c.rolling(50).min()
+    roll_max_50 = c.rolling(50).max()
+    d["channel_50"] = (c - roll_min_50) / (roll_max_50 - roll_min_50).replace(0, 1e-10)
+
+    # Trend strength (ADX-like) — divergence of fast vs slow MA relative to price
+    d["trend_strength"] = abs(c.rolling(20).mean() - c.rolling(50).mean()) / c
+
+    # Gap proxy — high-low range as intraday volatility proxy, normalised
+    gap_proxy = (h - l) / c
+    d["gap_proxy"] = gap_proxy
+    d["gap_proxy_norm"] = gap_proxy / gap_proxy.rolling(20).mean().replace(0, 1e-10)
+
+    # Cumulative return acceleration — is momentum speeding up or slowing down
+    d["ret_accel"] = d["ret_5d"] - d["ret_10d"].shift(5)
+
+    # Volatility regime — short vol / long vol ratio (>1 = rising vol regime)
+    d["vol_regime"] = d["hvol_10"] / d["hvol_20"].replace(0, 1e-10)
+
+    # Price-volume divergence — price momentum vs volume momentum divergence
+    d["pv_diverge"] = d["ret_5d"] - d["vol_ratio"].pct_change(5)
+
+    # ── Trend-following features (strongest alpha in equities) ─────────────
+
+    # 52-week high proximity — stocks near highs tend to continue
+    high_252 = c.rolling(252, min_periods=60).max()
+    d["near_52w_high"] = c / high_252.replace(0, 1e-10)
+
+    # Risk-adjusted momentum — Sharpe of trailing returns
+    ret_20_std = d["log_ret"].rolling(20).std().replace(0, 1e-10)
+    d["risk_adj_mom_20"] = d["ret_20d"] / ret_20_std
+
+    # EMA crossover signals — fast vs slow
+    ema_5 = c.ewm(span=5).mean()
+    ema_20 = c.ewm(span=20).mean()
+    d["ema_cross_5_20"] = (ema_5 - ema_20) / c
+
+    # Normalised ATR trend — is volatility expanding or contracting
+    d["atr_trend"] = d["atr_pct"].pct_change(10)
+
     # Clean infinities and NaNs
     d.replace([np.inf, -np.inf], np.nan, inplace=True)
     d.dropna(inplace=True)
@@ -532,6 +577,12 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
       - Gross exposure capped at GROSS_LEVERAGE
       - Net exposure kept within NET_EXPOSURE_RANGE
 
+    Risk management (enforced each day):
+      - Per-position stop-loss: exits when unrealized loss exceeds STOP_LOSS_PCT
+      - Per-position take-profit: exits when unrealized gain exceeds TAKE_PROFIT_PCT
+      - Portfolio drawdown circuit breaker: reduces all positions by 50%
+        when portfolio drawdown from peak exceeds MAX_PORTFOLIO_DRAWDOWN
+
     Rebalances weekly. Includes transaction costs.
     """
     tickers = predictions.columns.tolist()
@@ -552,9 +603,13 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
         holdings[t] = alloc / price
         cash -= alloc
 
+    # Track entry prices for stop-loss / take-profit
+    entry_prices = {t: prices.loc[dates[0], t] for t in tickers}
+
     portfolio_values = []
     trade_log = []
     rebal_counter = 0
+    peak_nav = initial_capital  # track peak NAV for drawdown circuit breaker
 
     for i, date in enumerate(dates):
         if date not in prices.index:
@@ -565,8 +620,48 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
         # NAV = cash + sum(holdings[t] * price) — works for both long and short
         nav = cash + sum(holdings[t] * prices.loc[date, t] for t in tickers)
 
+        # ── Risk management: per-position stop-loss and take-profit ──
+        stop_loss = getattr(cfg_mod, 'STOP_LOSS_PCT', 0.06)
+        take_profit = getattr(cfg_mod, 'TAKE_PROFIT_PCT', 0.18)
+        for t in tickers:
+            if holdings[t] == 0:
+                continue
+            current_price = prices.loc[date, t]
+            entry_price = entry_prices[t]
+            if holdings[t] > 0:
+                pnl_pct = (current_price - entry_price) / entry_price
+            else:
+                pnl_pct = (entry_price - current_price) / entry_price
+            if pnl_pct <= -stop_loss or pnl_pct >= take_profit:
+                trade_value = abs(holdings[t] * current_price)
+                trade_cost = trade_value * cost_mult
+                cash += holdings[t] * current_price - trade_cost
+                side = "STOP" if pnl_pct <= -stop_loss else "TAKE_PROFIT"
+                trade_log.append((date, t, side, -holdings[t], current_price))
+                holdings[t] = 0.0
+                entry_prices[t] = current_price  # reset for next entry
+
+        # Recompute NAV after any stop-loss / take-profit exits
+        nav = cash + sum(holdings[t] * prices.loc[date, t] for t in tickers)
+
+        # ── Risk management: portfolio-level max drawdown circuit breaker ──
+        peak_nav = max(peak_nav, nav)
+        max_dd_limit = getattr(cfg_mod, 'MAX_PORTFOLIO_DRAWDOWN', 0.12)
+        current_dd = (peak_nav - nav) / peak_nav
+        if current_dd > max_dd_limit:
+            for t in tickers:
+                reduce = holdings[t] * 0.5
+                if abs(reduce * prices.loc[date, t]) > nav * 0.001:
+                    cash += reduce * prices.loc[date, t]
+                    trade_cost = abs(reduce * prices.loc[date, t]) * cost_mult
+                    cash -= trade_cost
+                    holdings[t] -= reduce
+                    trade_log.append((date, t, "DELEVERAGE", -reduce, prices.loc[date, t]))
+            peak_nav = nav  # reset peak after deleveraging
+
         rebal_counter += 1
-        if rebal_counter >= 5 and i < len(dates) - 1:
+        rebal_freq = getattr(cfg_mod, 'REBALANCE_DAYS', 5)
+        if rebal_counter >= rebal_freq and i < len(dates) - 1:
             rebal_counter = 0
             signals = predictions.loc[date]
             target_w = _signal_to_weights(signals, tickers, cfg_mod)
@@ -577,7 +672,7 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
                 target_shares = target_dollar / price
                 diff_shares = target_shares - holdings[t]
 
-                if abs(diff_shares * price) > nav * 0.002:
+                if abs(diff_shares * price) > nav * 0.01:
                     trade_cost = abs(diff_shares * price) * cost_mult
                     cash -= trade_cost
 
@@ -591,6 +686,8 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
                     else:
                         side = "SELL" if holdings[t] >= 0 else "SHORT"
                     trade_log.append((date, t, side, diff_shares, price))
+                    # Update entry price on rebalance (new position or direction change)
+                    entry_prices[t] = price
 
         nav = cash + sum(holdings[t] * prices.loc[date, t] for t in tickers)
         portfolio_values.append({"date": date, "portfolio": nav})
@@ -784,20 +881,42 @@ def compute_metrics(portfolio, trades):
 #  REPORT GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def generate_report(metrics, trades, portfolio, path, tickers=None):
+def generate_report(metrics, trades, portfolio, path, tickers=None, cfg_mod=None):
+    import itertools
+
     L = []
     w = 80
-    L.append("=" * w)
-    L.append("AI STOCK TRADER — REAL DATA BACKTEST REPORT".center(w))
+    border = "=" * w
+    L.append(border)
+    L.append("")
+    L.append("A L P H A F O R G E   A I".center(w))
+    L.append("Real Data Backtest Report".center(w))
     L.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".center(w))
-    L.append("=" * w)
+    L.append("")
+    L.append(border)
 
     beat = metrics["strategy_return"] > metrics["benchmark_return"]
     alpha = metrics["strategy_return"] - metrics["benchmark_return"]
 
-    L.append("\n1. EXECUTIVE SUMMARY")
-    L.append("-" * 40)
-    L.append(f"  Verdict:              {'BEAT' if beat else 'UNDERPERFORMED'} the S&P 500")
+    # ── Performance Grade ──────────────────────────────────────────────────
+    sharpe = metrics["strategy_sharpe"]
+    alpha_pct = alpha * 100
+    if sharpe > 1.5 and alpha_pct > 10:
+        grade = "A+"
+    elif sharpe > 1.0 and alpha_pct > 5:
+        grade = "A"
+    elif beat:
+        grade = "B+"
+    elif abs(alpha_pct) < 5:
+        grade = "B"
+    else:
+        grade = "C"
+
+    L.append("\n" + "-" * w)
+    L.append("1. EXECUTIVE SUMMARY".center(w))
+    L.append("-" * w)
+    L.append(f"  Verdict:              {'>>> BEAT <<<' if beat else 'UNDERPERFORMED'} the S&P 500")
+    L.append(f"  Performance Grade:    {grade}")
     L.append(f"  Alpha:                {alpha:+.2%}")
     L.append(f"  Strategy Return:      {metrics['strategy_return']:.2%}")
     L.append(f"  Benchmark Return:     {metrics['benchmark_return']:.2%}")
@@ -808,37 +927,73 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
         L.append(f"\n  Universe:             {', '.join(tickers)}")
         L.append(f"  Number of stocks:     {len(tickers)}")
 
-    L.append("\n2. DETAILED METRICS")
-    L.append("-" * 40)
-    detail_keys = [
-        ("Strategy CAGR", "strategy_cagr"), ("Benchmark CAGR", "benchmark_cagr"),
-        ("Strategy Volatility", "strategy_vol"), ("Benchmark Volatility", "benchmark_vol"),
-        ("Strategy Sortino", "strategy_sortino"), ("Benchmark Sortino", "benchmark_sortino"),
-        ("Strategy Max DD", "strategy_max_dd"), ("Benchmark Max DD", "benchmark_max_dd"),
-        ("Strategy Calmar", "strategy_calmar"), ("Benchmark Calmar", "benchmark_calmar"),
+    # ── Detailed Metrics ───────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("2. DETAILED METRICS".center(w))
+    L.append("-" * w)
+    tracking_error = metrics.get('tracking_error', max(abs(metrics['strategy_vol'] - metrics['benchmark_vol']), 0.01))
+    info_ratio = alpha / max(tracking_error, 0.001)
+    detail_rows = [
+        ("Strategy CAGR", "strategy_cagr"),
+        ("Benchmark CAGR", "benchmark_cagr"),
+        ("Strategy Volatility", "strategy_vol"),
+        ("Benchmark Volatility", "benchmark_vol"),
+        ("Strategy Sortino", "strategy_sortino"),
+        ("Benchmark Sortino", "benchmark_sortino"),
+        ("Strategy Max DD", "strategy_max_dd"),
+        ("Benchmark Max DD", "benchmark_max_dd"),
+        ("Strategy Calmar", "strategy_calmar"),
+        ("Benchmark Calmar", "benchmark_calmar"),
     ]
-    for label, key in detail_keys:
+    for label, key in detail_rows:
         v = metrics[key]
         L.append(f"  {label:<28} {v:>12.4f}")
+    L.append(f"  {'Tracking Error':<28} {tracking_error:>12.4f}")
+    L.append(f"  {'Information Ratio':<28} {info_ratio:>12.3f}")
 
-    L.append("\n3. TRADE STATISTICS")
-    L.append("-" * 40)
+    # ── Trade Statistics ───────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("3. TRADE STATISTICS".center(w))
+    L.append("-" * w)
     L.append(f"  Total Trades:         {metrics['total_trades']:,}")
     L.append(f"  Win Rate:             {metrics['win_rate']:.1%}")
     L.append(f"  Profit Factor:        {metrics['profit_factor']:.2f}")
     L.append(f"  Avg Trade Return:     {metrics['avg_trade_return']:.4%}")
 
+    # Win/loss streaks
+    daily_rets = metrics.get('strat_daily', None)
+    if daily_rets is not None and len(daily_rets) > 0:
+        streaks_binary = (daily_rets > 0).astype(int)
+        max_win_streak = max(
+            (sum(1 for _ in g) for k, g in itertools.groupby(streaks_binary) if k == 1),
+            default=0,
+        )
+        max_loss_streak = max(
+            (sum(1 for _ in g) for k, g in itertools.groupby(streaks_binary) if k == 0),
+            default=0,
+        )
+        avg_win = daily_rets[daily_rets > 0].mean() * 100
+        avg_loss = daily_rets[daily_rets < 0].mean() * 100
+        L.append(f"  Max Winning Streak:   {max_win_streak} days")
+        L.append(f"  Max Losing Streak:    {max_loss_streak} days")
+        L.append(f"  Avg Winning Day:      +{avg_win:.3f}%")
+        L.append(f"  Avg Losing Day:       {avg_loss:.3f}%")
+        L.append(f"  Win/Loss Magnitude:   {abs(avg_win / avg_loss):.2f}x")
+
     if len(trades) > 0:
-        L.append("\n4. RECENT TRADES (last 40)")
-        L.append("-" * 40)
-        L.append(f"  {'Date':<12} {'Ticker':<8} {'Side':<10} {'Shares':>12} {'Price':>12}")
-        L.append(f"  {'─'*12} {'─'*8} {'─'*10} {'─'*12} {'─'*12}")
+        L.append("\n" + "-" * w)
+        L.append("4. RECENT TRADES (last 40)".center(w))
+        L.append("-" * w)
+        L.append(f"  {'Date':<12} {'Ticker':<8} {'Side':<14} {'Shares':>12} {'Price':>12}")
+        L.append(f"  {'─'*12} {'─'*8} {'─'*14} {'─'*12} {'─'*12}")
         for _, row in trades.tail(40).iterrows():
             dt = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
-            L.append(f"  {dt:<12} {row['ticker']:<8} {row['side']:<10} {row['shares']:>12.2f} ${row['price']:>11.2f}")
+            L.append(f"  {dt:<12} {row['ticker']:<8} {row['side']:<14} {row['shares']:>12.2f} ${row['price']:>11.2f}")
 
-    L.append("\n5. MONTHLY RETURNS")
-    L.append("-" * 40)
+    # ── Monthly Returns ────────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("5. MONTHLY RETURNS".center(w))
+    L.append("-" * w)
     strat = portfolio["portfolio"]
     monthly = strat.resample("ME").last().pct_change().dropna()
     L.append(f"  {'Month':<10} {'Return':>10}")
@@ -846,8 +1001,10 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     for dt, ret in monthly.items():
         L.append(f"  {dt.strftime('%Y-%m'):<10} {ret:>+10.2%}")
 
-    L.append("\n6. DRAWDOWN ANALYSIS")
-    L.append("-" * 40)
+    # ── Drawdown Analysis ──────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("6. DRAWDOWN ANALYSIS".center(w))
+    L.append("-" * w)
     pk = strat.cummax()
     dd = (strat - pk) / pk
     worst = dd.idxmin()
@@ -860,26 +1017,57 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     else:
         L.append(f"  Recovery:             Not recovered")
 
-    L.append("\n7. RISK-ADJUSTED ANALYSIS")
-    L.append("-" * 40)
-    tracking_error = metrics.get('tracking_error', max(abs(metrics['strategy_vol'] - metrics['benchmark_vol']), 0.01))
-    L.append(f"  Information Ratio:    {alpha / tracking_error:.3f}")
+    # ── Risk-Adjusted Analysis ─────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("7. RISK-ADJUSTED ANALYSIS".center(w))
+    L.append("-" * w)
+    L.append(f"  Information Ratio:    {info_ratio:.3f}")
+    L.append(f"  Tracking Error:       {tracking_error:.4f}")
     L.append(f"  Treynor Ratio:        {(metrics['strategy_cagr'] - 0.04):.4f}")
     L.append(f"  Return/MaxDD:         {abs(metrics['strategy_return'] / min(metrics['strategy_max_dd'], -0.001)):.2f}")
 
-    L.append("\n8. METHODOLOGY")
-    L.append("-" * 40)
+    # ── Risk Controls ──────────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("8. RISK CONTROLS".center(w))
+    L.append("-" * w)
+    sl = getattr(cfg_mod, 'STOP_LOSS_PCT', 0.06) * 100 if cfg_mod else 6
+    tp = getattr(cfg_mod, 'TAKE_PROFIT_PCT', 0.18) * 100 if cfg_mod else 18
+    mdd_lim = getattr(cfg_mod, 'MAX_PORTFOLIO_DRAWDOWN', 0.12) * 100 if cfg_mod else 12
+    max_pos = getattr(cfg_mod, 'MAX_POSITION_PCT', 0.15) * 100 if cfg_mod else 15
+    tx_bps = getattr(cfg_mod, 'TRANSACTION_COST_BPS', 10) if cfg_mod else 10
+    rebal = getattr(cfg_mod, 'REBALANCE_DAYS', 5) if cfg_mod else 5
+    rebal_label = "Monthly" if rebal >= 20 else "Bi-weekly" if rebal >= 10 else "Weekly"
+    allow_short = getattr(cfg_mod, 'ALLOW_SHORT', False) if cfg_mod else False
+    mom_w = getattr(cfg_mod, 'MOMENTUM_WEIGHT', 0) if cfg_mod else 0
+    mdl_w = getattr(cfg_mod, 'MODEL_WEIGHT', 1) if cfg_mod else 1
+    L.append(f"  Stop-Loss:              Active ({sl:.0f}% per position)")
+    L.append(f"  Take-Profit:            Active ({tp:.0f}% per position)")
+    L.append(f"  Max Drawdown Breaker:   Active ({mdd_lim:.0f}% portfolio level)")
+    L.append(f"  Position Limit:         {max_pos:.0f}% max per ticker")
+    L.append(f"  Transaction Costs:      {tx_bps} bps per trade")
+    L.append(f"  Rebalance Frequency:    {rebal_label} ({rebal} days)")
+
+    # ── Methodology ────────────────────────────────────────────────────────
+    L.append("\n" + "-" * w)
+    L.append("9. METHODOLOGY".center(w))
+    L.append("-" * w)
     L.append("  Data:                 REAL historical prices (yfinance)")
     L.append("  Benchmark:            SPY (S&P 500 ETF)")
     L.append("  Normalisation:        Train-only Z-scoring (no look-ahead)")
     L.append("  Target:               Raw forward 5-day price return")
     L.append("  Model:                Ensemble MLP (pure NumPy, Adam optimiser)")
-    L.append("  Rebalancing:          Weekly, fully invested, softmax weights")
-    L.append("  Costs:                10 bps per trade")
+    L.append(f"  Signal Blend:         {mom_w:.0%} momentum + {mdl_w:.0%} ML model")
+    L.append(f"  Rebalancing:          {rebal_label}, fully invested, softmax weights")
+    mode = "Long/Short with short overlay" if allow_short else "Long-only"
+    L.append(f"  Mode:                 {mode}")
+    L.append(f"  Costs:                {tx_bps} bps per trade")
 
-    L.append("\n" + "=" * w)
+    L.append("\n" + border)
+    L.append("")
+    L.append("AlphaForge AI | Powered by Neural Ensemble".center(w))
     L.append("END OF REPORT".center(w))
-    L.append("=" * w)
+    L.append("")
+    L.append(border)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(L))
@@ -897,7 +1085,8 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
 
     plt.style.use(cfg_mod.CHART_STYLE)
     fig, axes = plt.subplots(3, 2, figsize=(22, 16))
-    fig.suptitle("AI Stock Trader — Real Data Backtest (vs S&P 500)",
+    fig.patch.set_facecolor('#0a0a0a')
+    fig.suptitle("AlphaForge AI -- Real Data Backtest (vs S&P 500)",
                  fontsize=20, fontweight="bold", color="white", y=0.98)
 
     strat = portfolio["portfolio"]
@@ -906,7 +1095,7 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
     bd = metrics["bench_daily"]
 
     ax = axes[0, 0]
-    ax.plot(strat.index, strat / 1e6, color="#00ff88", lw=1.8, label="AI Strategy")
+    ax.plot(strat.index, strat / 1e6, color="#00ff88", lw=2.2, label="AI Strategy")
     ax.plot(bench.index, bench / 1e6, color="#ff6666", lw=1.3, alpha=0.8, label="S&P 500 (SPY)")
     ax.fill_between(strat.index, strat / 1e6, bench / 1e6,
                     where=strat > bench, color="#00ff88", alpha=0.08)
@@ -996,7 +1185,12 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
             a.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
             a.tick_params(axis="x", rotation=30, labelsize=8)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    # Watermark
+    fig.text(0.98, 0.01, "AlphaForge AI | Powered by Neural Ensemble",
+             ha="right", va="bottom", fontsize=9, color="#555555",
+             fontstyle="italic", alpha=0.7)
+
+    plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=cfg_mod.CHART_DPI, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)

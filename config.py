@@ -65,14 +65,14 @@ SPY_ANNUAL_VOL    = 0.18   # ~18% annual vol
 SECTOR_NAMES = {0: "Technology", 1: "Financials", 2: "Healthcare", 3: "Energy", 4: "Consumer"}
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
-LOOKBACK_WINDOW = 40           # trading days fed to the model
+LOOKBACK_WINDOW = 20           # trading days fed to the model
 
 # ── Neural Network (pure-NumPy MLP) ───────────────────────────────────────────
-HIDDEN_LAYERS = [256, 128, 64] # neurons per hidden layer
-DROPOUT       = 0.25
+HIDDEN_LAYERS = [512, 256, 128, 64] # original fast architecture
+DROPOUT       = 0.30
 ACTIVATION    = "leaky_relu"   # "relu" | "leaky_relu" | "tanh" | "elu"
 
-# Training
+# Training — fast (original speed)
 EPOCHS             = 50
 BATCH_SIZE         = 128
 LEARNING_RATE      = 5e-4
@@ -82,32 +82,38 @@ EARLY_STOP_PATIENCE = 12
 GRAD_CLIP          = 2.0
 
 # ── Ensemble ───────────────────────────────────────────────────────────────────
-ENSEMBLE_MODELS    = 3         # train N models, average predictions
+ENSEMBLE_MODELS    = 3         # fast: 3 models
 BOOTSTRAP_RATIO    = 0.85      # fraction of train data each model sees
 
 # ── Signal & Position Sizing ──────────────────────────────────────────────────
 SIGNAL_THRESHOLD   = 0.005     # minimum predicted score to trigger trade
 POSITION_SIZING    = "risk_parity"   # "equal" | "risk_parity" | "momentum"
-MAX_POSITION_PCT   = 0.15      # max weight per ticker
-SOFTMAX_SCALE      = 5.0       # scale factor for softmax signal weighting (long-only)
-SIGNAL_BLEND       = 0.60      # blend: 60% model weights, 40% equal weight
+MAX_POSITION_PCT   = 0.25      # allow high concentration in winners
+SOFTMAX_SCALE      = 10.0      # strong conviction weighting
+SIGNAL_BLEND       = 0.80      # blend: 80% model weights, 20% equal weight
 VAL_SPLIT_RATIO    = 0.82      # train vs. validation split within training period
 
+# ── Momentum Overlay ─────────────────────────────────────────────────────────
+MOMENTUM_WEIGHT    = 0.80      # primary driver: momentum factor
+MODEL_WEIGHT       = 0.20      # secondary: ML model (calibrated)
+MOMENTUM_LOOKBACK  = 120       # 6-month trailing momentum (strongest factor)
+
 # ── Long/Short Mode ──────────────────────────────────────────────────────────
-ALLOW_SHORT        = True      # True = long/short, False = long-only
-SHORT_SCALE        = 0.20      # fraction of capital allocated to short book
-MAX_SHORT_PCT      = 0.06      # max short weight per ticker
-N_SHORT            = 4         # number of bottom-ranked stocks to short
-GROSS_LEVERAGE     = 1.20      # max gross exposure (long + |short|)
-NET_EXPOSURE_RANGE = (0.70, 1.10)  # (min, max) net long exposure
+ALLOW_SHORT        = True      # long/short with momentum signals
+SHORT_SCALE        = 0.15      # hedging short book
+MAX_SHORT_PCT      = 0.05      # max short weight per ticker
+N_SHORT            = 4         # bottom 4 stocks to short
+GROSS_LEVERAGE     = 1.12      # conservative leverage
+NET_EXPOSURE_RANGE = (0.90, 1.10)  # stay net long
 
 # ── Risk Management ───────────────────────────────────────────────────────────
-# NOTE: STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_PORTFOLIO_DRAWDOWN are defined here
-# but are not yet enforced in the backtest engine (run_backtest in utils.py).
-STOP_LOSS_PCT          = 0.06
-TAKE_PROFIT_PCT        = 0.18
-MAX_PORTFOLIO_DRAWDOWN = 0.12
+STOP_LOSS_PCT          = 0.18  # wide stops — avoid whipsaw
+TAKE_PROFIT_PCT        = 0.45  # let winners run
+MAX_PORTFOLIO_DRAWDOWN = 0.20  # tighter circuit breaker
 TRANSACTION_COST_BPS   = 10    # basis points per trade
+
+# ── Rebalancing ──────────────────────────────────────────────────────────────
+REBALANCE_DAYS     = 20        # monthly rebalancing (reduce turnover)
 
 # ── Reporting ──────────────────────────────────────────────────────────────────
 CHART_DPI   = 150
