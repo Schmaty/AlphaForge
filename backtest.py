@@ -56,7 +56,14 @@ def test_data_pipeline():
     print("  1a. Loading real stock data …")
     try:
         tickers = cfg.UNIVERSE[:5]
-        data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
+        data = load_real_data(
+            tickers,
+            data_dir=cfg.DATA_DIR,
+            benchmark=cfg.BENCHMARK,
+            start_date=cfg.START_DATE,
+            end_date=cfg.END_DATE,
+            auto_download=True,
+        )
         assert len(data["Close"]) > 200, "Too few rows"
         assert not data["Close"].isnull().all().any(), "All-NaN columns"
         print(f"    ✓  {len(data['Close'])} days, {data['Close'].shape[1]} tickers")
@@ -165,7 +172,14 @@ def test_walk_forward(quick=False):
     print_section("TEST 3: WALK-FORWARD CROSS-VALIDATION (REAL DATA)")
 
     tickers = cfg.UNIVERSE[:8]
-    data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
+    data = load_real_data(
+        tickers,
+        data_dir=cfg.DATA_DIR,
+        benchmark=cfg.BENCHMARK,
+        start_date=cfg.START_DATE,
+        end_date=cfg.END_DATE,
+        auto_download=True,
+    )
 
     # Build raw features + normalise per fold
     raw_frames = {}
@@ -276,7 +290,14 @@ def test_monte_carlo(n_sims=1000):
 
     # Use REAL SPY daily returns for bootstrap
     try:
-        data = load_real_data(["AAPL"], data_dir=cfg.DATA_DIR)  # just need SPY benchmark
+        data = load_real_data(
+            ["AAPL"],  # just need SPY benchmark
+            data_dir=cfg.DATA_DIR,
+            benchmark=cfg.BENCHMARK,
+            start_date=cfg.START_DATE,
+            end_date=cfg.END_DATE,
+            auto_download=True,
+        )
         spy = data["Benchmark"]
         daily_rets = spy.pct_change().dropna().values
         print(f"  Using real SPY returns ({len(daily_rets)} days)")
@@ -324,7 +345,14 @@ def test_sensitivity():
     print_section("TEST 5: PARAMETER SENSITIVITY")
 
     tickers = cfg.UNIVERSE[:8]
-    data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
+    data = load_real_data(
+        tickers,
+        data_dir=cfg.DATA_DIR,
+        benchmark=cfg.BENCHMARK,
+        start_date=cfg.START_DATE,
+        end_date=cfg.END_DATE,
+        auto_download=True,
+    )
     dates = data["Close"].index
     prices = data["Close"][tickers]
     bench = data["Benchmark"]

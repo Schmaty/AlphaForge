@@ -59,16 +59,23 @@ def main():
 
     # ── 1. LOAD REAL DATA ─────────────────────────────────────────────────────
     print_section("1. LOADING REAL STOCK DATA")
-    print(f"  Loading OHLCV from data/ (downloaded via yfinance) …")
-    data = load_real_data(cfg.UNIVERSE, data_dir=cfg.DATA_DIR)
+    print(f"  Loading OHLCV from data/ (auto-downloads missing files via yfinance) …")
+    data = load_real_data(
+        cfg.UNIVERSE,
+        data_dir=cfg.DATA_DIR,
+        benchmark=cfg.BENCHMARK,
+        start_date=cfg.START_DATE,
+        end_date=cfg.END_DATE,
+        auto_download=True,
+    )
     prices = data["Close"]
     benchmark = data["Benchmark"]
 
     print_metric("Tickers", ", ".join(cfg.UNIVERSE))
-    print_metric("Benchmark", "SPY (S&P 500 ETF)")
+    print_metric("Benchmark", f"{cfg.BENCHMARK} (S&P 500 ETF)")
     print_metric("Date range", f"{prices.index[0].date()} → {prices.index[-1].date()}")
     print_metric("Trading days", len(prices))
-    print_metric("Data source", "Yahoo Finance (real historical)")
+    print_metric("Data source", "Yahoo Finance (real historical; auto-download enabled)")
 
     # Show per-stock returns
     total_rets = (prices.iloc[-1] / prices.iloc[0] - 1)

@@ -127,10 +127,114 @@ def pbar(cur, tot, w=30, ret=False):
 #  REAL STOCK DATA LOADER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_real_data(tickers, data_dir="data"):
+def _read_yfinance_csv(csv_path):
+    """Read a yfinance CSV written by DataFrame.to_csv()."""
+    df = pd.read_csv(csv_path, header=0, skiprows=[1, 2], index_col=0, parse_dates=True)
+    df.index.name = "Date"
+    df = df.sort_index()
+
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"{csv_path} is missing required columns: {', '.join(missing_cols)}")
+
+    return df
+
+
+def download_market_data(
+    tickers,
+    data_dir="data",
+    start_date=None,
+    end_date=None,
+):
+    """
+    Download OHLCV CSVs from Yahoo Finance for the requested symbols.
+
+    CSVs are written in the same raw yfinance format that load_real_data()
+    expects, so the rest of the pipeline can keep using the existing loader.
+    """
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise ImportError(
+            "yfinance is required to auto-download market data. "
+            "Install it with: pip install yfinance"
+        ) from exc
+
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    downloaded = []
+    for ticker in tickers:
+        print(f"  Downloading {ticker} from Yahoo Finance …")
+        try:
+            df = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to download {ticker}: {exc}") from exc
+
+        if df.empty:
+            raise ValueError(
+                f"Yahoo Finance returned no rows for {ticker} "
+                f"(start={start_date}, end={end_date})."
+            )
+
+        df.to_csv(data_path / f"{ticker}.csv")
+        downloaded.append(ticker)
+
+    return downloaded
+
+
+def ensure_market_data(
+    tickers,
+    data_dir="data",
+    benchmark="SPY",
+    start_date=None,
+    end_date=None,
+):
+    """Download any missing ticker CSVs required by the pipeline."""
+    data_path = Path(data_dir)
+    required = list(dict.fromkeys([*tickers, benchmark]))
+    missing = []
+
+    for ticker in required:
+        csv_path = data_path / f"{ticker}.csv"
+        if not csv_path.exists() or csv_path.stat().st_size == 0:
+            missing.append(ticker)
+
+    if not missing:
+        return []
+
+    print(
+        f"  {colour('•', 'c')} Missing {len(missing)} data file(s) in "
+        f"{data_path}/; downloading required symbols …"
+    )
+    downloaded = download_market_data(
+        missing,
+        data_dir=data_path,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    print(f"  {colour('✓', 'g')} Downloaded {len(downloaded)} symbol file(s).")
+    return downloaded
+
+
+def load_real_data(
+    tickers,
+    data_dir="data",
+    benchmark="SPY",
+    start_date=None,
+    end_date=None,
+    auto_download=False,
+):
     """
     Load real OHLCV stock data from CSV files downloaded via yfinance.
-    Also loads SPY as the benchmark.
 
     yfinance auto_adjust=True CSVs have a multi-row header:
       Row 0: Price,Close,High,Low,Open,Volume
@@ -138,9 +242,19 @@ def load_real_data(tickers, data_dir="data"):
       Row 2: Date,,,,,
       Row 3+: data
 
+    If auto_download=True, any missing symbol CSVs are fetched before loading.
     Returns the same dict format as the old generate_market_data().
     """
     data_path = Path(data_dir)
+    if auto_download:
+        ensure_market_data(
+            tickers,
+            data_dir=data_path,
+            benchmark=benchmark,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
     close_frames, high_frames, low_frames, open_frames, vol_frames = {}, {}, {}, {}, {}
 
     for ticker in tickers:
@@ -148,9 +262,7 @@ def load_real_data(tickers, data_dir="data"):
         if not csv_path.exists():
             raise FileNotFoundError(f"Missing data file: {csv_path}")
 
-        df = pd.read_csv(csv_path, header=0, skiprows=[1, 2], index_col=0, parse_dates=True)
-        df.index.name = "Date"
-        df = df.sort_index()
+        df = _read_yfinance_csv(csv_path)
 
         # Columns are: Close, High, Low, Open, Volume
         close_frames[ticker] = df["Close"].astype(float)
@@ -183,16 +295,15 @@ def load_real_data(tickers, data_dir="data"):
     open_df  = open_df.ffill()
     vol_df   = vol_df.ffill()
 
-    # Load SPY benchmark
-    spy_path = data_path / "SPY.csv"
-    if spy_path.exists():
-        spy_df = pd.read_csv(spy_path, header=0, skiprows=[1, 2], index_col=0, parse_dates=True)
-        spy_df.index.name = "Date"
-        spy_df = spy_df.sort_index()
-        benchmark = spy_df["Close"].astype(float).reindex(close_df.index).ffill()
-        benchmark.name = "SPY"
+    # Load benchmark
+    benchmark_ticker = benchmark
+    benchmark_path = data_path / f"{benchmark_ticker}.csv"
+    if benchmark_path.exists():
+        benchmark_df = _read_yfinance_csv(benchmark_path)
+        benchmark = benchmark_df["Close"].astype(float).reindex(close_df.index).ffill()
+        benchmark.name = benchmark_ticker
     else:
-        raise FileNotFoundError(f"Missing benchmark file: {spy_path}")
+        raise FileNotFoundError(f"Missing benchmark file: {benchmark_path}")
 
     return {
         "Open": open_df, "High": high_df, "Low": low_df,
