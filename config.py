@@ -40,31 +40,33 @@ TEST_SPLIT = 0.40
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 LOOKBACK_WINDOW = 40   # trading days of history fed to the model as features
-FORWARD_DAYS    = 5    # forward return horizon for target (prediction horizon)
+FORWARD_DAYS    = 3    # forward return horizon for target (prediction horizon)
 
 # ── Neural Network (pure-NumPy MLP) ───────────────────────────────────────────
 HIDDEN_LAYERS = (256, 128, 64)  # neurons per hidden layer (tuple — immutable)
-DROPOUT       = 0.25
+DROPOUT       = 0.20
 ACTIVATION    = "leaky_relu"    # "relu" | "leaky_relu" | "tanh" | "elu"
 
 # Training
-EPOCHS              = 50
+EPOCHS              = 60
 BATCH_SIZE          = 128
-LEARNING_RATE       = 5e-4
+LEARNING_RATE       = 6e-4
 WEIGHT_DECAY        = 1e-5
-LR_DECAY            = 0.995     # per-epoch multiplicative LR decay
-EARLY_STOP_PATIENCE = 12
+LR_DECAY            = 0.993     # per-epoch multiplicative LR decay
+EARLY_STOP_PATIENCE = 15
 GRAD_CLIP           = 2.0
 
 # ── Ensemble ───────────────────────────────────────────────────────────────────
-ENSEMBLE_MODELS = 3     # train N models, average predictions
-BOOTSTRAP_RATIO = 0.85  # fraction of train data each model sees
+ENSEMBLE_MODELS = 5     # train N models, average predictions
+BOOTSTRAP_RATIO = 0.88  # fraction of train data each model sees
 
 # ── Signal & Position Sizing ──────────────────────────────────────────────────
 SIGNAL_THRESHOLD = 0.005    # minimum predicted score to trigger trade
 POSITION_SIZING  = "risk_parity"  # "equal" | "risk_parity" | "momentum"
-MAX_POSITION_PCT = 0.15     # max weight per ticker (15%)
-REBALANCE_DAYS   = 5        # trading days between rebalances (weekly)
+MAX_POSITION_PCT = 0.20     # max weight per ticker (20%)
+REBALANCE_DAYS   = 3        # trading days between rebalances
+SIGNAL_BLEND     = 0.75     # model signal weight (75% model / 25% equal)
+SIGNAL_SCALE     = 8.0      # sharper softmax differentiation
 
 # ── Risk Management ───────────────────────────────────────────────────────────
 STOP_LOSS_PCT          = 0.06

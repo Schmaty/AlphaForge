@@ -13,14 +13,14 @@
 
 | Metric | AlphaForge | S&P 500 (SPY) | Edge |
 |:--|--:|--:|--:|
-| **Total Return** | **75.35%** | 61.38% | **+13.97 pp** |
-| **CAGR** | **27.27%** | 22.81% | **+4.46 pp** |
-| **Sharpe Ratio** | **1.409** | 1.124 | **+0.285** |
-| **Sortino Ratio** | **1.917** | 1.447 | **+0.470** |
-| **Max Drawdown** | **−16.84%** | −18.76% | **1.92 pp shallower** |
-| **Calmar Ratio** | **1.619** | 1.216 | **+0.403** |
+| **Total Return** | **394.26%** | 226.01% | **+168.26 pp** |
+| **CAGR** | **20.82%** | 15.01% | **+5.81 pp** |
+| **Sharpe Ratio** | **0.908** | 0.622 | **+0.286** |
+| **Sortino Ratio** | **1.107** | 0.749 | **+0.358** |
+| **Max Drawdown** | **−29.12%** | −33.72% | **4.60 pp shallower** |
+| **Calmar Ratio** | **0.715** | 0.445 | **+0.270** |
 
-*Out-of-sample · 2023–2025 · 10 bps transaction costs · 20 large-cap equities*
+*Out-of-sample · 2017–2025 · 10 bps transaction costs · 20 large-cap equities · 5-model ensemble*
 
 </div>
 
@@ -52,28 +52,28 @@ The project is designed around three principles:
  └────────────────────────────────────────────────────────┘
           │
           ▼
- Temporal Split          70% train  /  30% test  (date-ordered, no shuffle)
+ Temporal Split          60% train  /  40% test  (date-ordered, no shuffle)
  Z-score Normalisation   fit on training rows only → applied to both splits
           │
           ▼
  Sliding Windows         40 days → 1,640-dim input vector per sample
- Target                  raw forward 5-day price return (un-normalised close)
+ Target                  raw forward 3-day price return (un-normalised close)
           │
           ▼
- Ensemble Training       3 × MLP  [1640 → 256 → 128 → 64 → 1]
+ Ensemble Training       5 × MLP  [1640 → 256 → 128 → 64 → 1]
  ┌────────────────────────────────────────────────────────┐
  │  Optimiser   Adam  (β₁ 0.9, β₂ 0.999)                 │
  │  Loss        Huber  (robust to return outliers)        │
- │  Reg.        Dropout 25%  ·  L2 weight decay  ·  grad clip │
- │  Sampling    85% bootstrap per model                   │
+ │  Reg.        Dropout 20%  ·  L2 weight decay  ·  grad clip │
+ │  Sampling    88% bootstrap per model                   │
  └────────────────────────────────────────────────────────┘
           │
           ▼
- Ensemble Predictions    averaged across 3 models
+ Ensemble Predictions    averaged across 5 models
           │
           ▼
- Portfolio Construction  Softmax weights  ·  60% model / 40% equal
- Execution               Weekly rebalance  ·  always fully invested
+ Portfolio Construction  Softmax weights  ·  75% model / 25% equal
+ Execution               3-day rebalance  ·  always fully invested
  Costs                   10 bps per trade leg
           │
           ▼
@@ -159,30 +159,33 @@ All hyperparameters live in `config.py`. No code changes required to tune the mo
 # ── Universe ──────────────────────────────────────────────────
 UNIVERSE = ["AAPL", "MSFT", "GOOGL", ...]   # stocks to trade
 START_DATE = "2004-01-01"                    # data start (warmup period)
-TEST_SPLIT = 0.30                            # fraction held out for testing
+TEST_SPLIT = 0.40                            # fraction held out for testing
 
 # ── Feature Engineering ───────────────────────────────────────
 LOOKBACK_WINDOW = 40     # days of history per input sample
-FORWARD_DAYS    = 5      # prediction horizon (target return window)
+FORWARD_DAYS    = 3      # prediction horizon (target return window)
 
 # ── Neural Network ────────────────────────────────────────────
 HIDDEN_LAYERS   = (256, 128, 64)   # neurons per hidden layer
-DROPOUT         = 0.25
+DROPOUT         = 0.20
 ACTIVATION      = "leaky_relu"     # relu | leaky_relu | tanh | elu
-EPOCHS          = 50
+EPOCHS          = 60
 BATCH_SIZE      = 128
-LEARNING_RATE   = 5e-4
+LEARNING_RATE   = 6e-4
 WEIGHT_DECAY    = 1e-5
-LR_DECAY        = 0.995            # per-epoch multiplicative decay
-EARLY_STOP_PATIENCE = 12
+LR_DECAY        = 0.993            # per-epoch multiplicative decay
+EARLY_STOP_PATIENCE = 15
 GRAD_CLIP       = 2.0
 
 # ── Ensemble ──────────────────────────────────────────────────
-ENSEMBLE_MODELS = 3      # models to train and average
-BOOTSTRAP_RATIO = 0.85   # fraction of training data per model
+ENSEMBLE_MODELS = 5      # models to train and average
+BOOTSTRAP_RATIO = 0.88   # fraction of training data per model
 
 # ── Portfolio ─────────────────────────────────────────────────
-MAX_POSITION_PCT     = 0.15   # maximum weight per ticker (15%)
+MAX_POSITION_PCT     = 0.20   # maximum weight per ticker (20%)
+REBALANCE_DAYS       = 3      # trading days between rebalances
+SIGNAL_BLEND         = 0.75   # model signal weight (75% model / 25% equal)
+SIGNAL_SCALE         = 8.0    # softmax temperature for weight differentiation
 TRANSACTION_COST_BPS = 10     # basis points per trade leg
 RISK_FREE_RATE       = 0.04   # annualised, for Sharpe / Sortino / Treynor
 ```
@@ -208,17 +211,17 @@ A full MLP implementation in pure NumPy — no autograd, no frameworks.
 
 ### Ensemble Strategy
 
-Each of the 3 models is trained on an 85% bootstrap sample of the training set with a different random seed. Final predictions are the mean across all models, reducing variance and improving out-of-sample stability.
+Each of the 5 models is trained on an 88% bootstrap sample of the training set with a different random seed. Final predictions are the mean across all models, reducing variance and improving out-of-sample stability.
 
 ### Portfolio Construction
 
 Signals are converted to weights via a blended softmax scheme:
 
 ```
-weight_i = 0.40 × (1/N) + 0.60 × softmax(5 × signal_i)
+weight_i = 0.25 × (1/N) + 0.75 × softmax(8 × signal_i)
 ```
 
-Weights are clipped to `[0.005, MAX_POSITION_PCT]` and renormalised to sum to 1.0, keeping the portfolio always fully invested.
+Weights are clipped to `[0.005, MAX_POSITION_PCT]` and renormalised to sum to 1.0, keeping the portfolio always fully invested. The higher blend (75%) and sharper softmax temperature (8.0) allow the model to express stronger conviction in its top picks while maintaining diversification through the equal-weight floor.
 
 ---
 

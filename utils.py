@@ -744,13 +744,13 @@ def _signal_to_weights(signals, tickers, cfg_mod):
     scores = np.array([signals.get(t, 0.0) for t in tickers])
 
     # Softmax-like transformation for weight tilts
-    scale = 5.0
+    scale = getattr(cfg_mod, 'SIGNAL_SCALE', 5.0)
     scores_scaled = np.clip(scale * scores, -20, 20)
     exp_scores = np.exp(scores_scaled)
     model_weights = exp_scores / exp_scores.sum()
 
-    # Blend: 40% equal weight + 60% model signal
-    blend = 0.60
+    # Blend: equal weight + model signal
+    blend = getattr(cfg_mod, 'SIGNAL_BLEND', 0.60)
     final_weights = (1 - blend) * base_w + blend * model_weights
 
     final_weights = np.clip(final_weights, 0.005, cfg_mod.MAX_POSITION_PCT)
