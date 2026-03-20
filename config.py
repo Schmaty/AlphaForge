@@ -36,7 +36,7 @@ START_DATE = "2004-01-01"
 END_DATE   = "2025-12-31"
 
 # Train / test split (most-recent N% used for out-of-sample test)
-TEST_SPLIT = 0.70
+TEST_SPLIT = 0.40
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 LOOKBACK_WINDOW = 40   # trading days of history fed to the model as features
