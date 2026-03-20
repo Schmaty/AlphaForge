@@ -17,21 +17,21 @@ CHART_PATH = OUTPUT_DIR / "trading_charts.png"
 # ── Universe ───────────────────────────────────────────────────────────────────
 UNIVERSE = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
-    "META", "TSLA", "JPM", "V", "JNJ",
-    "UNH", "XOM", "PG", "HD", "MA",
-    "LLY", "ABBV", "MRK", "AVGO", "PEP",
+    "INTC", "IBM",  "JPM",  "BAC",  "GS",
+    "JNJ",  "UNH",  "LLY",  "MRK",  "XOM",
+    "PG",   "HD",   "PEP",  "WMT",  "KO",
 ]
 
 BENCHMARK = "SPY"
 
-# Simulation dates
-START_DATE = "2018-01-01"
+# Simulation dates (effective range is 2013-01-02 to 2025-12-30 due to ABBV IPO)
+START_DATE = "2000-01-01"
 END_DATE   = "2025-12-31"
 
 # Train / test split (most-recent N% used for out-of-sample test)
 TEST_SPLIT = 0.30
 
-# ── Real Stock Calibration Data (2018-2025 historical estimates) ───────────────
+# ── Real Stock Calibration Data (unused — legacy from synthetic generator) ─────
 # Each entry: (annual_return%, annual_vol%, beta_to_SPY, sector_id, approx_price_2018)
 # Sectors: 0=Tech, 1=Finance, 2=Health, 3=Energy, 4=Consumer
 STOCK_PARAMS = {
@@ -57,7 +57,7 @@ STOCK_PARAMS = {
     "PEP":   (0.08, 0.18, 0.60, 4, 119),
 }
 
-# SPY benchmark calibration (2018-2025)
+# SPY benchmark calibration (unused — legacy from synthetic generator)
 SPY_ANNUAL_RETURN = 0.12   # ~12% CAGR for SPY 2018-2025
 SPY_ANNUAL_VOL    = 0.18   # ~18% annual vol
 

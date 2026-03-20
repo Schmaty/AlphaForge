@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 import config as cfg
+from downloader import ensure_data
 from utils import (
     load_real_data,
     add_features,
@@ -49,6 +50,8 @@ from utils import (
 def main():
     start_time = time.time()
     cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_data(cfg.UNIVERSE, cfg.BENCHMARK, data_dir="data",
+                start=cfg.START_DATE, end=cfg.END_DATE)
 
     # ── Banner ─────────────────────────────────────────────────────────────────
     print_header(
