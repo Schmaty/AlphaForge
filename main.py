@@ -74,10 +74,10 @@ def main():
     total_rets = (prices.iloc[-1] / prices.iloc[0] - 1)
     best = total_rets.idxmax()
     worst = total_rets.idxmin()
-    print_metric(f"Best performer", f"{best} ({total_rets[best]:+.0%})")
-    print_metric(f"Worst performer", f"{worst} ({total_rets[worst]:+.0%})")
+    print_metric("Best performer", f"{best} ({total_rets[best]:+.0%})")
+    print_metric("Worst performer", f"{worst} ({total_rets[worst]:+.0%})")
     spy_ret = benchmark.iloc[-1] / benchmark.iloc[0] - 1
-    print_metric(f"SPY total return", f"{spy_ret:+.0%}")
+    print_metric("Benchmark total return", f"{spy_ret:+.0%}")
 
     # ── 2. FEATURES (RAW, un-normalised) ──────────────────────────────────────
     print_section("2. FEATURE ENGINEERING")

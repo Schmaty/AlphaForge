@@ -594,7 +594,7 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
         port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers)
 
         rebal_counter += 1
-        if rebal_counter >= 5 and i < len(dates) - 1:
+        if rebal_counter >= getattr(cfg_mod, 'REBALANCE_DAYS', 5) and i < len(dates) - 1:
             rebal_counter = 0
             signals = predictions.loc[date]
             target_w = _signal_to_weights(signals, tickers, cfg_mod)
@@ -753,7 +753,7 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     alpha = metrics["strategy_return"] - metrics["benchmark_return"]
 
     L.append("\n1. EXECUTIVE SUMMARY")
-    L.append("-" * 40)
+    L.append("-" * 60)
     L.append(f"  Verdict:              {'BEAT' if beat else 'UNDERPERFORMED'} the S&P 500")
     L.append(f"  Alpha:                {alpha:+.2%}")
     L.append(f"  Strategy Return:      {metrics['strategy_return']:.2%}")
@@ -766,7 +766,12 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
         L.append(f"  Number of stocks:     {len(tickers)}")
 
     L.append("\n2. DETAILED METRICS")
-    L.append("-" * 40)
+    L.append("-" * 60)
+    pct_keys = {
+        "strategy_cagr", "benchmark_cagr",
+        "strategy_vol", "benchmark_vol",
+        "strategy_max_dd", "benchmark_max_dd",
+    }
     detail_keys = [
         ("Strategy CAGR", "strategy_cagr"), ("Benchmark CAGR", "benchmark_cagr"),
         ("Strategy Volatility", "strategy_vol"), ("Benchmark Volatility", "benchmark_vol"),
@@ -776,10 +781,13 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     ]
     for label, key in detail_keys:
         v = metrics[key]
-        L.append(f"  {label:<28} {v:>12.4f}")
+        if key in pct_keys:
+            L.append(f"  {label:<28} {v:>11.2%}")
+        else:
+            L.append(f"  {label:<28} {v:>12.4f}")
 
     L.append("\n3. TRADE STATISTICS")
-    L.append("-" * 40)
+    L.append("-" * 60)
     L.append(f"  Total Trades:         {metrics['total_trades']:,}")
     L.append(f"  Positive Days:        {metrics['win_rate']:.1%}  (daily portfolio return > 0)")
     L.append(f"  Daily Profit Factor:  {metrics['profit_factor']:.2f}  (sum gains / sum losses)")
@@ -787,15 +795,16 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
 
     if len(trades) > 0:
         L.append("\n4. RECENT TRADES (last 40)")
-        L.append("-" * 40)
-        L.append(f"  {'Date':<12} {'Ticker':<8} {'Side':<10} {'Shares':>12} {'Price':>12}")
-        L.append(f"  {'─'*12} {'─'*8} {'─'*10} {'─'*12} {'─'*12}")
+        L.append("-" * 60)
+        L.append(f"  {'Date':<12} {'Ticker':<8} {'Side':<6} {'Shares':>10} {'Price ($)':>12}")
+        L.append(f"  {'─'*12} {'─'*8} {'─'*6} {'─'*10} {'─'*12}")
         for _, row in trades.tail(40).iterrows():
             dt = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
-            L.append(f"  {dt:<12} {row['ticker']:<8} {row['side']:<10} {row['shares']:>12.2f} ${row['price']:>11.2f}")
+            price_str = f"${row['price']:,.2f}"
+            L.append(f"  {dt:<12} {row['ticker']:<8} {row['side']:<6} {abs(row['shares']):>10.2f} {price_str:>12}")
 
     L.append("\n5. MONTHLY RETURNS")
-    L.append("-" * 40)
+    L.append("-" * 60)
     strat = portfolio["portfolio"]
     monthly = strat.resample("ME").last().pct_change().dropna()
     L.append(f"  {'Month':<10} {'Return':>10}")
@@ -804,7 +813,7 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
         L.append(f"  {dt.strftime('%Y-%m'):<10} {ret:>+10.2%}")
 
     L.append("\n6. DRAWDOWN ANALYSIS")
-    L.append("-" * 40)
+    L.append("-" * 60)
     pk = strat.cummax()
     dd = (strat - pk) / pk
     worst = dd.idxmin()
@@ -818,15 +827,15 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
         L.append(f"  Recovery:             Not recovered")
 
     L.append("\n7. RISK-ADJUSTED ANALYSIS")
-    L.append("-" * 40)
+    L.append("-" * 60)
     L.append(f"  Information Ratio:    {metrics['information_ratio']:.3f}  (ann. active return / tracking error)")
     L.append(f"  Tracking Error:       {metrics['tracking_error']:.2%}  (annualized)")
     L.append(f"  Beta:                 {metrics['beta']:.3f}  (vs SPY)")
-    L.append(f"  Treynor Ratio:        {metrics['treynor_ratio']:.4f}  ((CAGR - rf) / beta)")
+    L.append(f"  Treynor Ratio:        {metrics['treynor_ratio']:.3f}  ((CAGR - rf) / beta)")
     L.append(f"  Return/MaxDD:         {abs(metrics['strategy_return'] / min(metrics['strategy_max_dd'], -0.001)):.2f}")
 
     L.append("\n8. METHODOLOGY")
-    L.append("-" * 40)
+    L.append("-" * 60)
     L.append("  Data:                 REAL historical prices (yfinance)")
     L.append("  Benchmark:            SPY (S&P 500 ETF)")
     L.append("  Normalisation:        Train-only Z-scoring (no look-ahead)")
@@ -874,6 +883,12 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
     ax.legend(framealpha=0.3, fontsize=10)
     ax.set_ylabel("Portfolio ($M)")
     ax.grid(alpha=0.15)
+    stats_text = (f"Return: {metrics['strategy_return']:.1%} vs {metrics['benchmark_return']:.1%}\n"
+                  f"Sharpe: {metrics['strategy_sharpe']:.2f}  |  Sortino: {metrics['strategy_sortino']:.2f}\n"
+                  f"Max DD: {metrics['strategy_max_dd']:.1%}  |  Calmar: {metrics['strategy_calmar']:.2f}")
+    ax.text(0.02, 0.97, stats_text, transform=ax.transAxes, fontsize=8,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='black', alpha=0.6, edgecolor='#00ff88'))
 
     ax = axes[0, 1]
     pk_s = strat.cummax()
@@ -919,8 +934,8 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
             for j in range(len(piv.columns)):
                 v = piv.values[i, j]
                 if not np.isnan(v):
-                    ax.text(j, i, f"{v:.1%}", ha="center", va="center", fontsize=7,
-                            color="black" if abs(v) < 0.04 else "white")
+                    ax.text(j, i, f"{v:+.1%}", ha="center", va="center", fontsize=7,
+                            fontweight="bold", color="black" if abs(v) < 0.03 else "white")
         plt.colorbar(im, ax=ax, shrink=0.8)
     ax.set_title("Monthly Returns Heatmap", fontsize=13, color="white")
 

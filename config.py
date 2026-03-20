@@ -36,7 +36,7 @@ START_DATE = "2004-01-01"
 END_DATE   = "2025-12-31"
 
 # Train / test split (most-recent N% used for out-of-sample test)
-TEST_SPLIT = 0.30
+TEST_SPLIT = 0.70
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 LOOKBACK_WINDOW = 40   # trading days of history fed to the model as features
@@ -64,6 +64,7 @@ BOOTSTRAP_RATIO = 0.85  # fraction of train data each model sees
 SIGNAL_THRESHOLD = 0.005    # minimum predicted score to trigger trade
 POSITION_SIZING  = "risk_parity"  # "equal" | "risk_parity" | "momentum"
 MAX_POSITION_PCT = 0.15     # max weight per ticker (15%)
+REBALANCE_DAYS   = 5        # trading days between rebalances (weekly)
 
 # ── Risk Management ───────────────────────────────────────────────────────────
 STOP_LOSS_PCT          = 0.06
