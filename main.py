@@ -43,6 +43,7 @@ from utils import (
     print_table,
     pbar,
     colour,
+    colour_cmp,
 )
 
 
@@ -59,7 +60,7 @@ def main():
     # ── 1. LOAD REAL DATA ─────────────────────────────────────────────────────
     print_section("1. LOADING REAL STOCK DATA")
     print(f"  Loading OHLCV from data/ (downloaded via yfinance) …")
-    data = load_real_data(cfg.UNIVERSE, data_dir="data")
+    data = load_real_data(cfg.UNIVERSE, data_dir=cfg.DATA_DIR)
     prices = data["Close"]
     benchmark = data["Benchmark"]
 
@@ -135,7 +136,7 @@ def main():
     for ticker in cfg.UNIVERSE:
         normed = norm_feature_frames[ticker]
         close_raw = data["Close"][ticker]
-        X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW, fwd_days=5)
+        X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW, fwd_days=cfg.FORWARD_DAYS)
         all_X.append(X)
         all_y.append(y)
         all_dates.extend(dates_seq)
@@ -159,7 +160,13 @@ def main():
     print_metric("Target", "Forward 5-day raw price return")
 
     # Split by DATE (temporal — no future leakage)
-    train_mask = np.array([d <= split_date for d in all_dates])
+    # Safety buffer: each training target uses cfg.FORWARD_DAYS of future prices.
+    # Samples within FORWARD_DAYS of the nominal split date would have targets
+    # that land in the test period, creating lookahead bias. We exclude them
+    # from training by moving the effective split boundary back by FORWARD_DAYS.
+    _safe_idx = max(0, split_idx - 1 - cfg.FORWARD_DAYS)
+    safe_split_date = common_dates[_safe_idx]
+    train_mask = np.array([d <= safe_split_date for d in all_dates])
     test_mask = ~train_mask
 
     X_train_full = X_all[train_mask]
@@ -180,16 +187,18 @@ def main():
 
     # ── 5. TRAINING ──────────────────────────────────────────────────────────
     print_section("5. ENSEMBLE TRAINING")
+    # Use an isolated RandomState for bootstrap sampling to avoid polluting
+    # the global numpy RNG (NumpyMLP uses its own internal RandomState).
+    _boot_rng = np.random.RandomState(42)
     models = []
     for i in range(cfg.ENSEMBLE_MODELS):
-        np.random.seed(42 + i * 13)
         n = len(X_tr)
-        idx = np.random.choice(n, size=int(n * cfg.BOOTSTRAP_RATIO), replace=True)
+        idx = _boot_rng.choice(n, size=int(n * cfg.BOOTSTRAP_RATIO), replace=True)
         X_boot, y_boot = X_tr[idx], y_tr[idx]
         m = train_model(X_boot, y_boot, X_val, y_val, i, cfg)
         models.append(m)
 
-    print(f"\n  ✓  Ensemble of {cfg.ENSEMBLE_MODELS} models trained on real stock data.")
+    print(f"\n  {colour('✓', 'g')}  Ensemble of {colour(str(cfg.ENSEMBLE_MODELS), 'c')} models trained on real historical data.")
 
     # ── 6. PREDICTION ────────────────────────────────────────────────────────
     print_section("6. GENERATING PREDICTIONS")
@@ -208,8 +217,9 @@ def main():
     pred_pivot = pred_pivot.reindex(columns=cfg.UNIVERSE).fillna(0.0)
 
     # Signal quality
-    corr = np.corrcoef(preds, y_test)[0, 1]
-    dir_acc = np.mean(np.sign(preds) == np.sign(y_test))
+    corr = np.corrcoef(preds, y_test)[0, 1] if preds.std() > 0 else 0.0
+    # Use strict inequality to avoid sign(0)==sign(0) inflating accuracy
+    dir_acc = np.mean((preds > 0) == (y_test > 0))
 
     print_metric("Prediction days", len(pred_pivot))
     print_metric("Signal-target correlation", f"{corr:.4f}")
@@ -219,28 +229,30 @@ def main():
 
     # ── 7. BACKTESTING ───────────────────────────────────────────────────────
     print_section("7. BACKTESTING ON REAL PRICES")
-    test_prices = prices.reindex(pred_pivot.index).ffill().bfill()
-    bench = benchmark.reindex(pred_pivot.index).ffill().bfill()
+    # Forward-fill only — bfill would use future prices to fill leading gaps.
+    test_prices = prices.reindex(pred_pivot.index).ffill()
+    bench = benchmark.reindex(pred_pivot.index).ffill()
     portfolio, trades = run_backtest(pred_pivot, test_prices, bench, cfg)
 
-    metrics = compute_metrics(portfolio, trades)
+    metrics = compute_metrics(portfolio, trades, rf=cfg.RISK_FREE_RATE)
 
     # ── 8. RESULTS ───────────────────────────────────────────────────────────
     print_section("8. PERFORMANCE SUMMARY — AI vs S&P 500")
 
+    m = metrics
     table = [
-        ["Metric", "AI Strategy", "S&P 500 (SPY)"],
-        ["Total Return", f"{metrics['strategy_return']:.2%}", f"{metrics['benchmark_return']:.2%}"],
-        ["CAGR", f"{metrics['strategy_cagr']:.2%}", f"{metrics['benchmark_cagr']:.2%}"],
-        ["Sharpe Ratio", f"{metrics['strategy_sharpe']:.3f}", f"{metrics['benchmark_sharpe']:.3f}"],
-        ["Sortino Ratio", f"{metrics['strategy_sortino']:.3f}", f"{metrics['benchmark_sortino']:.3f}"],
-        ["Max Drawdown", f"{metrics['strategy_max_dd']:.2%}", f"{metrics['benchmark_max_dd']:.2%}"],
-        ["Annualised Vol", f"{metrics['strategy_vol']:.2%}", f"{metrics['benchmark_vol']:.2%}"],
-        ["Calmar Ratio", f"{metrics['strategy_calmar']:.3f}", f"{metrics['benchmark_calmar']:.3f}"],
-        ["Win Rate", f"{metrics['win_rate']:.1%}", "—"],
-        ["Profit Factor", f"{metrics['profit_factor']:.2f}", "—"],
-        ["Total Trades", f"{metrics['total_trades']:,}", "—"],
-        ["Avg Trade Ret", f"{metrics['avg_trade_return']:.4%}", "—"],
+        ["Metric",             "AI Strategy",                                                          "S&P 500 (SPY)"],
+        ["Total Return",       colour_cmp(m['strategy_return'],  m['benchmark_return'],  ".2%"),       f"{m['benchmark_return']:.2%}"],
+        ["CAGR",               colour_cmp(m['strategy_cagr'],    m['benchmark_cagr'],    ".2%"),       f"{m['benchmark_cagr']:.2%}"],
+        ["Sharpe Ratio",       colour_cmp(m['strategy_sharpe'],  m['benchmark_sharpe'],  ".3f"),       f"{m['benchmark_sharpe']:.3f}"],
+        ["Sortino Ratio",      colour_cmp(m['strategy_sortino'], m['benchmark_sortino'], ".3f"),       f"{m['benchmark_sortino']:.3f}"],
+        ["Max Drawdown",       colour_cmp(m['strategy_max_dd'],  m['benchmark_max_dd'],  ".2%"),       f"{m['benchmark_max_dd']:.2%}"],
+        ["Annualised Vol",     colour_cmp(m['strategy_vol'],     m['benchmark_vol'],     ".2%", False),f"{m['benchmark_vol']:.2%}"],
+        ["Calmar Ratio",       colour_cmp(m['strategy_calmar'],  m['benchmark_calmar'],  ".3f"),       f"{m['benchmark_calmar']:.3f}"],
+        ["Positive Days",      f"{m['win_rate']:.1%}",           "—"],
+        ["Daily Prof Factor",  f"{m['profit_factor']:.2f}",      "—"],
+        ["Total Trades",       f"{m['total_trades']:,}",          "—"],
+        ["Avg Trade Size",     f"{m['avg_trade_size']:.4%}",      "—"],
     ]
     print_table(table)
 
@@ -248,10 +260,16 @@ def main():
     alpha = metrics["strategy_return"] - metrics["benchmark_return"]
     verdict = colour("BEAT", "g") if beat else colour("UNDERPERFORMED", "r")
     clr = "g" if beat else "r"
+    w = 66
 
-    print(f"\n  {'━' * 62}")
+    print(f"\n  {colour('━' * w, clr)}")
     print(f"  AI Strategy {verdict} the S&P 500 by {colour(f'{alpha:+.2%}', clr)}")
-    print(f"  {'━' * 62}")
+    detail = (f"  Strategy {metrics['strategy_return']:.2%}  ·  "
+              f"Benchmark {metrics['benchmark_return']:.2%}  ·  "
+              f"Sharpe {metrics['strategy_sharpe']:.3f}  ·  "
+              f"Sortino {metrics['strategy_sortino']:.3f}")
+    print(colour(detail, "D"))
+    print(f"  {colour('━' * w, clr)}")
 
     # ── 9. REPORTS & CHARTS ──────────────────────────────────────────────────
     print_section("9. GENERATING OUTPUTS")

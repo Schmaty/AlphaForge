@@ -41,7 +41,7 @@ from utils import (
     colour,
 )
 
-OUTPUT = Path("outputs")
+OUTPUT = Path(__file__).parent / "outputs"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -56,7 +56,7 @@ def test_data_pipeline():
     print("  1a. Loading real stock data …")
     try:
         tickers = cfg.UNIVERSE[:5]
-        data = load_real_data(tickers, data_dir="data")
+        data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
         assert len(data["Close"]) > 200, "Too few rows"
         assert not data["Close"].isnull().all().any(), "All-NaN columns"
         print(f"    ✓  {len(data['Close'])} days, {data['Close'].shape[1]} tickers")
@@ -165,7 +165,7 @@ def test_walk_forward(quick=False):
     print_section("TEST 3: WALK-FORWARD CROSS-VALIDATION (REAL DATA)")
 
     tickers = cfg.UNIVERSE[:8]
-    data = load_real_data(tickers, data_dir="data")
+    data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
 
     # Build raw features + normalise per fold
     raw_frames = {}
@@ -182,14 +182,19 @@ def test_walk_forward(quick=False):
     n_folds = 3 if quick else 5
     fold_size = len(common) // (n_folds + 2)
 
-    orig_epochs = cfg.EPOCHS
-    orig_ens = cfg.ENSEMBLE_MODELS
-    cfg.EPOCHS = 15 if quick else 30
-    cfg.ENSEMBLE_MODELS = 1
+    # Use a local config copy to avoid mutating the shared module-level config,
+    # which would corrupt any subsequent call in the same process.
+    import copy
+    wf_cfg = copy.copy(cfg)
+    wf_cfg.EPOCHS = 15 if quick else 30
+    wf_cfg.ENSEMBLE_MODELS = 1
 
     results = []
     for f in range(2, 2 + n_folds):
         train_end_date = common[f * fold_size]
+        # Safety buffer: exclude the last FORWARD_DAYS samples from training
+        # so no training target uses prices from the test period.
+        safe_train_end = common[max(0, f * fold_size - cfg.FORWARD_DAYS)]
         test_start = f * fold_size
         test_end = min((f + 1) * fold_size, len(common))
         test_date_set = set(common[test_start:test_end])
@@ -208,10 +213,11 @@ def test_walk_forward(quick=False):
             normed = apply_normalisation(raw, mu, sigma)
             close_raw = data["Close"][t]
 
-            X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW, fwd_days=5)
+            X, y, dates_seq = build_sequences(normed, close_raw, cfg.LOOKBACK_WINDOW,
+                                              fwd_days=cfg.FORWARD_DAYS)
 
             for i, d in enumerate(dates_seq):
-                if d <= train_end_date:
+                if d <= safe_train_end:
                     all_X.append(X[i])
                     all_y.append(y[i])
                 elif d in test_date_set:
@@ -233,19 +239,19 @@ def test_walk_forward(quick=False):
         Xte, yte = Xte[mask], yte[mask]
 
         val_n = int(len(Xtr) * 0.85)
-        model = train_model(Xtr[:val_n], ytr[:val_n], Xtr[val_n:], ytr[val_n:], 0, cfg)
+        model = train_model(Xtr[:val_n], ytr[:val_n], Xtr[val_n:], ytr[val_n:], 0, wf_cfg)
 
         preds = model.predict(Xte)
-        corr = np.corrcoef(preds, yte)[0, 1] if len(preds) > 1 else 0
+        corr = np.corrcoef(preds, yte)[0, 1] if len(preds) > 1 and preds.std() > 0 else 0.0
         mse = np.mean((preds - yte)**2)
-        dir_acc = np.mean(np.sign(preds) == np.sign(yte))
+        # Strict inequality avoids sign(0)==sign(0) inflating direction accuracy
+        dir_acc = np.mean((preds > 0) == (yte > 0))
 
         results.append({"fold": f-1, "train": len(Xtr), "test": len(Xte),
                         "corr": corr, "mse": mse, "dir_acc": dir_acc})
         print(f"\n    Fold {f-1}: corr={corr:.4f}  mse={mse:.6f}  dir_acc={dir_acc:.2%}")
 
-    cfg.EPOCHS = orig_epochs
-    cfg.ENSEMBLE_MODELS = orig_ens
+    # wf_cfg was a local copy; no need to restore cfg
 
     if results:
         print()
@@ -270,7 +276,7 @@ def test_monte_carlo(n_sims=1000):
 
     # Use REAL SPY daily returns for bootstrap
     try:
-        data = load_real_data(["AAPL"], data_dir="data")  # just need SPY benchmark
+        data = load_real_data(["AAPL"], data_dir=cfg.DATA_DIR)  # just need SPY benchmark
         spy = data["Benchmark"]
         daily_rets = spy.pct_change().dropna().values
         print(f"  Using real SPY returns ({len(daily_rets)} days)")
@@ -318,7 +324,7 @@ def test_sensitivity():
     print_section("TEST 5: PARAMETER SENSITIVITY")
 
     tickers = cfg.UNIVERSE[:8]
-    data = load_real_data(tickers, data_dir="data")
+    data = load_real_data(tickers, data_dir=cfg.DATA_DIR)
     dates = data["Close"].index
     prices = data["Close"][tickers]
     bench = data["Benchmark"]
@@ -330,25 +336,23 @@ def test_sensitivity():
     thresholds = [0.005, 0.01, 0.02, 0.03, 0.05]
     sizings = ["equal", "risk_parity", "momentum"]
 
+    import copy
     results = []
-    orig_t, orig_s = cfg.SIGNAL_THRESHOLD, cfg.POSITION_SIZING
 
     for th in thresholds:
         for sz in sizings:
-            cfg.SIGNAL_THRESHOLD = th
-            cfg.POSITION_SIZING = sz
+            sens_cfg = copy.copy(cfg)
+            sens_cfg.SIGNAL_THRESHOLD = th
+            sens_cfg.POSITION_SIZING = sz
             try:
-                pv, tr = run_backtest(signals, prices, bench, cfg)
-                m = compute_metrics(pv, tr)
+                pv, tr = run_backtest(signals, prices, bench, sens_cfg)
+                m = compute_metrics(pv, tr, rf=cfg.RISK_FREE_RATE)
                 results.append({"threshold": th, "sizing": sz,
                                "return": m["strategy_return"], "sharpe": m["strategy_sharpe"],
                                "max_dd": m["strategy_max_dd"], "trades": m["total_trades"]})
-            except:
+            except Exception:
                 results.append({"threshold": th, "sizing": sz,
                                "return": 0, "sharpe": 0, "max_dd": 0, "trades": 0})
-
-    cfg.SIGNAL_THRESHOLD = orig_t
-    cfg.POSITION_SIZING = orig_s
 
     table = [["Threshold", "Sizing", "Return", "Sharpe", "Max DD", "Trades"]]
     for r in results:

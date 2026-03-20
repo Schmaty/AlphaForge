@@ -3,3 +3,9 @@
 .claude-flow
 __pycache__
 *.pyc
+
+# Downloaded market data — regenerate with yfinance, do not commit
+data/*.csv
+
+# Generated outputs — charts and reports are build artifacts
+outputs/

@@ -14,6 +14,7 @@ BIAS FIXES vs v1:
   4. No look-ahead leakage in normalisation or targets
 """
 
+import re as _re
 import sys
 import time
 from datetime import datetime
@@ -40,33 +41,65 @@ def colour(text, c):
     return f"{_C.get(MAP.get(c, c), '')}{text}{_C['0']}"
 
 
+def _vis_len(s):
+    """Visual length of a string, excluding ANSI escape codes."""
+    return len(_re.sub(r'\033\[[0-9;]*m', '', str(s)))
+
+
+def colour_cmp(ai_val, bm_val, fmt, higher_better=True):
+    """Format ai_val coloured green/red based on comparison to bm_val."""
+    beats = (ai_val > bm_val) if higher_better else (ai_val < bm_val)
+    return colour(format(ai_val, fmt), "g" if beats else "r")
+
+
 def print_header(title, subtitle=""):
-    w = 72
+    w = 70
+    c, b, d, rst = _C["c"], _C["B"], _C["D"], _C["0"]
     print()
-    print(colour("  ╔" + "═" * (w - 2) + "╗", "c"))
-    print(colour(f"  ║{title:^{w-2}}║", "c"))
+    print(f"  {c}╔{'═' * w}╗{rst}")
+    t = title.upper()
+    pad_l = (w - len(t)) // 2
+    pad_r = w - len(t) - pad_l
+    print(f"  {c}║{' ' * pad_l}{b}{t}{rst}{c}{' ' * pad_r}║{rst}")
     if subtitle:
-        print(colour(f"  ║{subtitle:^{w-2}}║", "c"))
-    print(colour("  ╚" + "═" * (w - 2) + "╝", "c"))
+        sp_l = (w - len(subtitle)) // 2
+        sp_r = w - len(subtitle) - sp_l
+        print(f"  {c}║{' ' * sp_l}{d}{subtitle}{rst}{c}{' ' * sp_r}║{rst}")
+    print(f"  {c}╚{'═' * w}╝{rst}")
     print()
 
 
 def print_section(title):
-    print(f"\n  {colour('─── ' + title + ' ', 'y')}{'─' * max(0, 56 - len(title))}\n")
+    fill = max(0, 60 - len(title))
+    print(f"\n  {colour('▸', 'y')} {colour(title, 'B')}  {colour('─' * fill, 'D')}\n")
 
 
 def print_metric(label, value, w=30):
-    print(f"  {colour('•', 'c')} {label:<{w}} {colour(str(value), 'w')}")
+    v = str(value)
+    s = v.strip()
+    if s.startswith('+'):
+        colored_v = colour(v, 'g')
+    elif s.startswith('-') and len(s) > 1 and (s[1].isdigit() or s[1] == '.'):
+        colored_v = colour(v, 'r')
+    else:
+        colored_v = colour(v, 'w')
+    print(f"  {colour('•', 'c')} {label:<{w}} {colored_v}")
 
 
 def print_table(rows):
     if not rows:
         return
     cols = len(rows[0])
-    widths = [max(len(str(rows[r][c])) for r in range(len(rows))) + 2 for c in range(cols)]
+    # Use _vis_len so ANSI-coded cells don't distort column widths
+    widths = [max(_vis_len(rows[r][c]) for r in range(len(rows))) + 2 for c in range(cols)]
 
     def _row(cells):
-        return "  │" + "│".join(f" {str(cells[c]):<{widths[c]}}" for c in range(cols)) + "│"
+        parts = []
+        for c in range(cols):
+            cell = str(cells[c])
+            pad = widths[c] - _vis_len(cell)
+            parts.append(f" {cell}{' ' * pad}")
+        return "  │" + "│".join(parts) + "│"
 
     top = "  ┌" + "┬".join("─" * (w + 1) for w in widths) + "┐"
     mid = "  ├" + "┼".join("─" * (w + 1) for w in widths) + "┤"
@@ -141,12 +174,14 @@ def load_real_data(tickers, data_dir="data"):
     open_df  = open_df.reindex(close_df.index)
     vol_df   = vol_df.reindex(close_df.index)
 
-    # Fill any remaining NaN (holidays etc)
-    close_df = close_df.ffill().bfill()
-    high_df  = high_df.ffill().bfill()
-    low_df   = low_df.ffill().bfill()
-    open_df  = open_df.ffill().bfill()
-    vol_df   = vol_df.ffill().bfill()
+    # Fill any remaining NaN (holidays etc) — forward-fill only.
+    # bfill is intentionally omitted: it would use future prices to fill
+    # leading gaps, introducing look-ahead bias.
+    close_df = close_df.ffill()
+    high_df  = high_df.ffill()
+    low_df   = low_df.ffill()
+    open_df  = open_df.ffill()
+    vol_df   = vol_df.ffill()
 
     # Load SPY benchmark
     spy_path = data_path / "SPY.csv"
@@ -154,7 +189,7 @@ def load_real_data(tickers, data_dir="data"):
         spy_df = pd.read_csv(spy_path, header=0, skiprows=[1, 2], index_col=0, parse_dates=True)
         spy_df.index.name = "Date"
         spy_df = spy_df.sort_index()
-        benchmark = spy_df["Close"].astype(float).reindex(close_df.index).ffill().bfill()
+        benchmark = spy_df["Close"].astype(float).reindex(close_df.index).ffill()
         benchmark.name = "SPY"
     else:
         raise FileNotFoundError(f"Missing benchmark file: {spy_path}")
@@ -450,7 +485,7 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
     import config as cfg_mod
 
     n_features = X_train.shape[1]
-    layers = [n_features] + cfg_mod.HIDDEN_LAYERS + [1]
+    layers = [n_features] + list(cfg_mod.HIDDEN_LAYERS) + [1]
 
     model = NumpyMLP(
         layers,
@@ -465,10 +500,12 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
     lr = cfg_mod.LEARNING_RATE
 
     n_params = model.param_count()
-    print(f"\n  {colour('Model', 'c')} {model_idx + 1}/{cfg_mod.ENSEMBLE_MODELS}  "
-          f"(MLP {layers}, params={n_params:,})")
+    arch = " → ".join(str(x) for x in layers)
+    print(f"\n  {colour(f'● Model {model_idx + 1}/{cfg_mod.ENSEMBLE_MODELS}', 'c')}  "
+          f"{colour(arch, 'B')}  {colour(f'{n_params:,} params', 'D')}")
 
     n = len(X_train)
+    e_w = len(str(cfg_mod.EPOCHS))  # epoch number display width
 
     for epoch in range(1, cfg_mod.EPOCHS + 1):
         perm = np.random.permutation(n)
@@ -494,10 +531,14 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
         val_diff = val_pred - y_val
         val_loss = np.mean(np.where(np.abs(val_diff) <= 1.0, 0.5 * val_diff**2, np.abs(val_diff) - 0.5))
 
-        bar = pbar(epoch, cfg_mod.EPOCHS, w=28, ret=True)
+        is_best = val_loss < best_val_loss
+        bm = colour("↓", "g") if is_best else " "
+        bar = pbar(epoch, cfg_mod.EPOCHS, w=26, ret=True)
         sys.stdout.write(
-            f"\r    {bar}  ep {epoch:>3}/{cfg_mod.EPOCHS}  "
-            f"train={epoch_loss/batches:.6f}  val={val_loss:.6f}  lr={lr:.2e}"
+            f"\r    {colour(f'[{epoch:>{e_w}}/{cfg_mod.EPOCHS}]', 'D')} {bar}  "
+            f"{colour('train', 'D')} {epoch_loss/batches:.4e}  "
+            f"{colour('val', 'D')} {colour(f'{val_loss:.4e}', 'g' if is_best else 'w')} {bm}  "
+            f"{colour('lr', 'D')} {lr:.2e}   "
         )
         sys.stdout.flush()
 
@@ -508,12 +549,13 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
         else:
             patience_ctr += 1
             if patience_ctr >= cfg_mod.EARLY_STOP_PATIENCE:
-                print(f"\n    ⏹  Early stop at epoch {epoch}")
+                print(f"\n    {colour('⏹', 'y')}  early stop  ep {epoch}  "
+                      f"{colour('best val', 'D')} {best_val_loss:.6f}")
                 break
 
         lr *= cfg_mod.LR_DECAY
 
-    print(f"\n    ✓  Best val loss: {best_val_loss:.6f}")
+    print(f"\n    {colour('✓', 'g')}  best val loss {colour(f'{best_val_loss:.6f}', 'w')}")
     model.set_params(best_params)
     return model
 
@@ -610,12 +652,11 @@ def _signal_to_weights(signals, tickers, cfg_mod):
 #  PORTFOLIO METRICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def compute_metrics(portfolio, trades):
+def compute_metrics(portfolio, trades, rf=0.04):
     strat = portfolio["portfolio"]
     bench = portfolio["benchmark"]
     days = len(strat)
     years = days / 252
-    rf = 0.04
 
     strat_ret = strat.iloc[-1] / strat.iloc[0] - 1
     bench_ret = bench.iloc[-1] / bench.iloc[0] - 1
@@ -647,16 +688,36 @@ def compute_metrics(portfolio, trades):
     s_cal = sc / abs(sm) if sm != 0 else 0
     b_cal = bc / abs(bm) if bm != 0 else 0
 
+    # Beta (market sensitivity)
+    common_idx = sd.index.intersection(bd.index)
+    sd_aligned = sd.reindex(common_idx)
+    bd_aligned = bd.reindex(common_idx)
+    cov_matrix = np.cov(sd_aligned.values, bd_aligned.values)
+    beta = cov_matrix[0, 1] / max(cov_matrix[1, 1], 1e-10)
+
+    # Tracking error and Information Ratio (both annualized)
+    active_daily = sd_aligned - bd_aligned
+    te = active_daily.std() * np.sqrt(252)
+    ir = (sc - bc) / max(te, 1e-10)
+
+    # Treynor Ratio: annualized excess return per unit of market risk
+    treynor = (sc - rf) / abs(beta) if abs(beta) > 1e-4 else 0.0
+
+    # Win rate and profit factor based on daily portfolio returns
+    # (trade-level P&L is not tracked; daily returns are the reliable measure)
+    sd_pos = sd[sd > 0]
+    sd_neg = sd[sd < 0]
+    wr = len(sd_pos) / max(len(sd), 1)   # fraction of positive-return days
+    gp = sd_pos.sum()
+    gl = abs(sd_neg.sum())
+    pf = gp / max(gl, 1e-10)             # sum(gains) / sum(losses) on daily returns
+
     nt = len(trades)
     if nt > 0:
-        tv = trades["shares"] * trades["price"]
-        wr = (tv > 0).mean()
-        gp = tv[tv > 0].sum()
-        gl = abs(tv[tv <= 0].sum())
-        pf = gp / max(gl, 1)
-        ar = tv.mean() / max(strat.iloc[0], 1)
+        tv = trades["shares"].abs() * trades["price"]
+        ar = tv.mean() / max(strat.iloc[0], 1)   # avg trade size as % of initial capital
     else:
-        wr = pf = ar = 0
+        ar = 0.0
 
     rs = (sd.rolling(63).mean() * 252 - rf) / (sd.rolling(63).std() * np.sqrt(252)).replace(0, 1)
 
@@ -669,7 +730,9 @@ def compute_metrics(portfolio, trades):
         "strategy_vol": sv, "benchmark_vol": bv,
         "strategy_calmar": s_cal, "benchmark_calmar": b_cal,
         "win_rate": wr, "profit_factor": pf,
-        "total_trades": nt, "avg_trade_return": ar,
+        "total_trades": nt, "avg_trade_size": ar,
+        "beta": beta, "tracking_error": te,
+        "information_ratio": ir, "treynor_ratio": treynor,
         "rolling_sharpe": rs, "strat_daily": sd, "bench_daily": bd,
     }
 
@@ -718,9 +781,9 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     L.append("\n3. TRADE STATISTICS")
     L.append("-" * 40)
     L.append(f"  Total Trades:         {metrics['total_trades']:,}")
-    L.append(f"  Win Rate:             {metrics['win_rate']:.1%}")
-    L.append(f"  Profit Factor:        {metrics['profit_factor']:.2f}")
-    L.append(f"  Avg Trade Return:     {metrics['avg_trade_return']:.4%}")
+    L.append(f"  Positive Days:        {metrics['win_rate']:.1%}  (daily portfolio return > 0)")
+    L.append(f"  Daily Profit Factor:  {metrics['profit_factor']:.2f}  (sum gains / sum losses)")
+    L.append(f"  Avg Trade Size:       {metrics['avg_trade_size']:.4%}  (% of initial capital)")
 
     if len(trades) > 0:
         L.append("\n4. RECENT TRADES (last 40)")
@@ -756,9 +819,10 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
 
     L.append("\n7. RISK-ADJUSTED ANALYSIS")
     L.append("-" * 40)
-    vol_diff = max(abs(metrics['strategy_vol'] - metrics['benchmark_vol']), 0.01)
-    L.append(f"  Information Ratio:    {alpha / vol_diff:.3f}")
-    L.append(f"  Treynor Ratio:        {(metrics['strategy_cagr'] - 0.04):.4f}")
+    L.append(f"  Information Ratio:    {metrics['information_ratio']:.3f}  (ann. active return / tracking error)")
+    L.append(f"  Tracking Error:       {metrics['tracking_error']:.2%}  (annualized)")
+    L.append(f"  Beta:                 {metrics['beta']:.3f}  (vs SPY)")
+    L.append(f"  Treynor Ratio:        {metrics['treynor_ratio']:.4f}  ((CAGR - rf) / beta)")
     L.append(f"  Return/MaxDD:         {abs(metrics['strategy_return'] / min(metrics['strategy_max_dd'], -0.001)):.2f}")
 
     L.append("\n8. METHODOLOGY")

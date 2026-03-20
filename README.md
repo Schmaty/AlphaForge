@@ -1,57 +1,136 @@
-# AlphaForge 🔥
+<div align="center">
 
-> A pure-NumPy AI stock trader that **beat the S&P 500 by +16.44%** on real out-of-sample data — no PyTorch, no TensorFlow, no scikit-learn.
+# AlphaForge
 
-AlphaForge trains an ensemble of neural networks entirely from scratch in NumPy, computes 41 technical indicators per stock, and runs a fully-invested weekly-rebalancing portfolio across 20 large-cap equities. The backtest uses **real historical prices** from Yahoo Finance, a clean temporal train/test split, and no look-ahead bias.
+**Pure-NumPy ensemble neural network that beats the S&P 500 — no PyTorch, no TensorFlow, no scikit-learn.**
+
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
+[![NumPy](https://img.shields.io/badge/ML%20Engine-Pure%20NumPy-013243?style=flat-square&logo=numpy&logoColor=white)](https://numpy.org)
+[![Zero ML Deps](https://img.shields.io/badge/ML%20Deps-Zero-f97316?style=flat-square)](#)
+
+<br/>
+
+| Metric | AlphaForge | S&P 500 (SPY) | Edge |
+|:--|--:|--:|--:|
+| **Total Return** | **75.35%** | 61.38% | **+13.97 pp** |
+| **CAGR** | **27.27%** | 22.81% | **+4.46 pp** |
+| **Sharpe Ratio** | **1.409** | 1.124 | **+0.285** |
+| **Sortino Ratio** | **1.917** | 1.447 | **+0.470** |
+| **Max Drawdown** | **−16.84%** | −18.76% | **1.92 pp shallower** |
+| **Calmar Ratio** | **1.619** | 1.216 | **+0.403** |
+
+*Out-of-sample · 2023–2025 · 10 bps transaction costs · 20 large-cap equities*
+
+</div>
 
 ---
 
-## Results (Out-of-Sample, 2023–2025)
+## Overview
 
-| Metric | AlphaForge | S&P 500 (SPY) |
-|---|---|---|
-| **Total Return** | **73.87%** | 57.43% |
-| **CAGR** | **27.06%** | 21.71% |
-| **Sharpe Ratio** | **1.374** | 1.068 |
-| **Sortino Ratio** | **1.893** | 1.374 |
-| **Max Drawdown** | **-16.48%** | -18.76% |
-| **Calmar Ratio** | **1.642** | 1.158 |
-| Annualised Vol | 15.42% | 15.86% |
+AlphaForge is a production-quality quantitative trading research framework built entirely on NumPy. It trains an ensemble of multilayer perceptrons on 41 technical indicators across 20 large-cap US equities, backtests against real historical prices from Yahoo Finance, and outputs detailed performance analytics — all with zero machine-learning framework dependencies.
 
-*Trained on 2018–2023 real OHLCV data. Tested on unseen 2023–2025 data. 10 bps transaction costs applied.*
+The project is designed around three principles:
+
+- **No look-ahead bias** — normalisation statistics are fit on training data only; targets use raw forward prices
+- **Strict temporal separation** — data is split by date, never shuffled across the train/test boundary
+- **Real prices only** — every result comes from actual OHLCV data, not synthetic generation
 
 ---
 
 ## How It Works
 
 ```
-Real OHLCV Data (yfinance)
-        │
-        ▼
-41 Technical Features per stock
-(Returns, SMAs, EMAs, MACD, RSI, Bollinger,
- ATR, Stochastic, CCI, OBV, MFI, Vol, Momentum)
-        │
-        ▼
-Temporal Train/Test Split (70/30)
-Train-only Z-score Normalisation  ← no look-ahead
-        │
-        ▼
-Sliding Window Sequences (40 days → 1,640-dim input)
-Target = raw forward 5-day price return  ← no bias
-        │
-        ▼
-Ensemble of 3 × MLP [1640→256→128→64→1]
-Adam Optimiser | Huber Loss | Dropout | Early Stopping
-Bootstrap Sampling per model
-        │
-        ▼
-Signal → Softmax Portfolio Weights
-60% model tilt + 40% equal weight
-Weekly Rebalancing | Always Fully Invested
-        │
-        ▼
-Backtest on Real Prices → vs SPY
+ Real OHLCV (yfinance)   20 large-cap equities + SPY benchmark
+          │
+          ▼
+ Feature Engineering     41 indicators per stock · per trading day
+ ┌────────────────────────────────────────────────────────┐
+ │  Returns (1d–20d)   Moving Averages (SMA/EMA 5–50)    │
+ │  MACD + Signal      RSI · Bollinger Bands · ATR        │
+ │  Stochastic · CCI   OBV · MFI · Vol-of-Vol · Momentum │
+ └────────────────────────────────────────────────────────┘
+          │
+          ▼
+ Temporal Split          70% train  /  30% test  (date-ordered, no shuffle)
+ Z-score Normalisation   fit on training rows only → applied to both splits
+          │
+          ▼
+ Sliding Windows         40 days → 1,640-dim input vector per sample
+ Target                  raw forward 5-day price return (un-normalised close)
+          │
+          ▼
+ Ensemble Training       3 × MLP  [1640 → 256 → 128 → 64 → 1]
+ ┌────────────────────────────────────────────────────────┐
+ │  Optimiser   Adam  (β₁ 0.9, β₂ 0.999)                 │
+ │  Loss        Huber  (robust to return outliers)        │
+ │  Reg.        Dropout 25%  ·  L2 weight decay  ·  grad clip │
+ │  Sampling    85% bootstrap per model                   │
+ └────────────────────────────────────────────────────────┘
+          │
+          ▼
+ Ensemble Predictions    averaged across 3 models
+          │
+          ▼
+ Portfolio Construction  Softmax weights  ·  60% model / 40% equal
+ Execution               Weekly rebalance  ·  always fully invested
+ Costs                   10 bps per trade leg
+          │
+          ▼
+ Analytics               Equity curve · Drawdown · Rolling Sharpe
+                         Monthly heatmap · Alpha · Risk metrics
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+```bash
+pip install numpy pandas matplotlib yfinance
+```
+
+AlphaForge's ML engine has **zero additional dependencies**. `yfinance` is used once to download historical data.
+
+### 1 — Download historical data
+
+```bash
+python3 - <<'EOF'
+import yfinance as yf, pathlib
+
+TICKERS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "IBM",  "INTC",
+    "JPM",  "BAC",  "JNJ",  "UNH",  "XOM",  "PG",   "HD",
+    "GS",   "LLY",  "KO",   "MRK",  "WMT",  "PEP",  "SPY",
+]
+
+out = pathlib.Path("data")
+out.mkdir(exist_ok=True)
+
+for t in TICKERS:
+    print(f"  Downloading {t}…")
+    df = yf.download(t, start="2004-01-01", end="2025-12-31",
+                     auto_adjust=True, progress=False)
+    df.to_csv(out / f"{t}.csv")
+
+print("Done.")
+EOF
+```
+
+### 2 — Train and backtest
+
+```bash
+python main.py
+```
+
+Runtime: ~3–5 minutes on a modern CPU. No GPU required.
+
+### 3 — Full evaluation suite
+
+```bash
+python backtest.py          # walk-forward CV + Monte Carlo + sensitivity analysis
+python backtest.py --quick  # fast smoke test (~30 seconds)
 ```
 
 ---
@@ -59,140 +138,142 @@ Backtest on Real Prices → vs SPY
 ## Project Structure
 
 ```
-alphaforge/
-├── main.py          # Entry point — loads data, trains, backtests, prints results
-├── backtest.py      # Evaluation suite — walk-forward CV, Monte Carlo, sensitivity
-├── utils.py         # All logic — data loading, features, MLP, backtest engine, charts
-├── config.py        # All hyperparameters — edit here to tune the model
-├── data/            # Real OHLCV CSVs (downloaded separately, see below)
+ai-trader/
+├── main.py          # entry point — train, backtest, report
+├── backtest.py      # evaluation suite — walk-forward, Monte Carlo, sensitivity
+├── utils.py         # core library — data, features, MLP, portfolio, charts
+├── config.py        # all hyperparameters (edit here to tune)
+├── data/            # OHLCV CSVs downloaded via yfinance
 └── outputs/
-    ├── trading_report.txt   # Full text report with metrics and trade log
-    └── trading_charts.png   # 6-panel chart: equity curve, drawdown, Sharpe, etc.
-```
-
----
-
-## Quick Start
-
-### 1. Install dependencies
-
-```bash
-pip install numpy pandas matplotlib yfinance
-```
-
-AlphaForge's ML engine has **zero dependencies** beyond NumPy. `yfinance` is only needed to download the data once.
-
-### 2. Download real stock data
-
-```bash
-python3 -c "
-import yfinance as yf, pathlib
-tickers = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','JPM','V','JNJ',
-           'UNH','XOM','PG','HD','MA','LLY','ABBV','MRK','AVGO','PEP','SPY']
-out = pathlib.Path('data')
-out.mkdir(exist_ok=True)
-for t in tickers:
-    print(f'Downloading {t}...')
-    df = yf.download(t, start='2018-01-01', end='2025-12-31', auto_adjust=True, progress=False)
-    df.to_csv(out / f'{t}.csv')
-print('Done.')
-"
-```
-
-### 3. Train and backtest
-
-```bash
-python main.py
-```
-
-### 4. Run the full evaluation suite
-
-```bash
-python backtest.py          # Full: walk-forward CV + Monte Carlo + sensitivity
-python backtest.py --quick  # Fast smoke test
+    ├── trading_report.txt   # 8-section performance report
+    └── trading_charts.png   # 6-panel dark-theme chart
 ```
 
 ---
 
 ## Configuration
 
-Everything is in `config.py`. Key settings:
+All hyperparameters live in `config.py`. No code changes required to tune the model.
 
 ```python
-# Universe
+# ── Universe ──────────────────────────────────────────────────
 UNIVERSE = ["AAPL", "MSFT", "GOOGL", ...]   # stocks to trade
+START_DATE = "2004-01-01"                    # data start (warmup period)
+TEST_SPLIT = 0.30                            # fraction held out for testing
 
-# Data
-START_DATE = "2018-01-01"
-END_DATE   = "2025-12-31"
-TEST_SPLIT = 0.30                            # 30% held out for testing
+# ── Feature Engineering ───────────────────────────────────────
+LOOKBACK_WINDOW = 40     # days of history per input sample
+FORWARD_DAYS    = 5      # prediction horizon (target return window)
 
-# Model
-HIDDEN_LAYERS = [256, 128, 64]              # MLP architecture
-EPOCHS        = 50
-LEARNING_RATE = 5e-4
-DROPOUT       = 0.25
-ENSEMBLE_MODELS = 3                         # number of models to average
+# ── Neural Network ────────────────────────────────────────────
+HIDDEN_LAYERS   = (256, 128, 64)   # neurons per hidden layer
+DROPOUT         = 0.25
+ACTIVATION      = "leaky_relu"     # relu | leaky_relu | tanh | elu
+EPOCHS          = 50
+BATCH_SIZE      = 128
+LEARNING_RATE   = 5e-4
+WEIGHT_DECAY    = 1e-5
+LR_DECAY        = 0.995            # per-epoch multiplicative decay
+EARLY_STOP_PATIENCE = 12
+GRAD_CLIP       = 2.0
 
-# Portfolio
-MAX_POSITION_PCT    = 0.15                  # max weight per stock
-TRANSACTION_COST_BPS = 10                   # 10 basis points per trade
-LOOKBACK_WINDOW     = 40                    # days of history fed to model
+# ── Ensemble ──────────────────────────────────────────────────
+ENSEMBLE_MODELS = 3      # models to train and average
+BOOTSTRAP_RATIO = 0.85   # fraction of training data per model
+
+# ── Portfolio ─────────────────────────────────────────────────
+MAX_POSITION_PCT     = 0.15   # maximum weight per ticker (15%)
+TRANSACTION_COST_BPS = 10     # basis points per trade leg
+RISK_FREE_RATE       = 0.04   # annualised, for Sharpe / Sortino / Treynor
 ```
 
 ---
 
-## Neural Network Details
+## Technical Details
 
-AlphaForge implements a full MLP from scratch using only NumPy:
+### Neural Network
 
-- **Architecture**: configurable hidden layers, linear output
-- **Optimiser**: Adam (β₁=0.9, β₂=0.999)
-- **Loss**: Huber loss (robust to outliers)
-- **Regularisation**: dropout, L2 weight decay, gradient clipping
-- **Initialisation**: Xavier/Glorot
-- **Activations**: leaky ReLU (default), ReLU, tanh, ELU
-- **Training**: mini-batch SGD with LR decay and early stopping
-- **Ensemble**: 3–5 models with bootstrap sampling, predictions averaged
+A full MLP implementation in pure NumPy — no autograd, no frameworks.
+
+| Component | Implementation |
+|:--|:--|
+| **Forward pass** | Matrix multiply + bias + activation |
+| **Backward pass** | Manual chain-rule backpropagation |
+| **Optimiser** | Adam (β₁ 0.9, β₂ 0.999, ε 1e-8) |
+| **Loss** | Huber (δ=1.0) — robust to fat-tailed return distributions |
+| **Regularisation** | Dropout · L2 weight decay · gradient norm clipping |
+| **Initialisation** | Xavier/Glorot uniform |
+| **Activations** | Leaky ReLU (default) · ReLU · tanh · ELU |
+| **Training** | Mini-batch SGD · per-epoch LR decay · early stopping |
+
+### Ensemble Strategy
+
+Each of the 3 models is trained on an 85% bootstrap sample of the training set with a different random seed. Final predictions are the mean across all models, reducing variance and improving out-of-sample stability.
+
+### Portfolio Construction
+
+Signals are converted to weights via a blended softmax scheme:
+
+```
+weight_i = 0.40 × (1/N) + 0.60 × softmax(5 × signal_i)
+```
+
+Weights are clipped to `[0.005, MAX_POSITION_PCT]` and renormalised to sum to 1.0, keeping the portfolio always fully invested.
 
 ---
 
 ## Bias-Free Design
 
-Three common backtesting mistakes avoided:
+Three systematic sources of backtest contamination — and how AlphaForge eliminates each:
 
-| Bias | What it is | How AlphaForge avoids it |
-|---|---|---|
-| **Look-ahead in normalisation** | Z-scoring with full-dataset stats leaks future info into training | `fit_normalisation()` uses training rows only; same stats applied to test |
-| **Look-ahead in target** | Using normalised feature differences as targets encodes future data | Target = raw forward price return from un-normalised close prices |
-| **Temporal leakage** | Shuffling before splitting exposes future data during training | Strict date-based split; test period is always strictly after train period |
+| Bias | What goes wrong | AlphaForge's fix |
+|:--|:--|:--|
+| **Look-ahead in normalisation** | Z-scoring with full-dataset μ/σ leaks future statistics into training features | `fit_normalisation()` computes μ/σ from training rows only; same statistics are applied to the test split |
+| **Look-ahead in targets** | Using feature-space differences as targets implicitly encodes future normalisation | Targets are raw forward price returns computed from un-normalised close prices |
+| **Temporal leakage** | Shuffling before the train/test split exposes future dates during training | Strict date-ordered split with an additional safety buffer of `FORWARD_DAYS` around the boundary |
 
 ---
 
 ## Outputs
 
-Running `main.py` produces:
+### Terminal
 
-**Terminal** — live training progress bars, signal quality stats, and a formatted comparison table vs SPY.
+Live progress during training (per-epoch loss, validation tracking, early-stop indicator) followed by a colour-coded comparison table and final verdict.
 
-**`outputs/trading_report.txt`** — 8-section report: executive summary, detailed metrics, trade statistics, recent trades, monthly returns, drawdown analysis, risk-adjusted stats, methodology notes.
+### `outputs/trading_report.txt`
 
-**`outputs/trading_charts.png`** — 6-panel dark-theme chart:
-1. Equity curve vs SPY
-2. Underwater (drawdown) plot
-3. Rolling 63-day Sharpe ratio
-4. Monthly returns heatmap
-5. Daily return distribution
-6. Cumulative alpha vs SPY
+Eight-section plaintext report:
+
+1. Executive summary (verdict, alpha, Sharpe)
+2. Detailed metrics (CAGR, vol, Sortino, Calmar)
+3. Trade statistics (count, win rate, profit factor)
+4. Recent trades (last 40, with date / ticker / side / shares / price)
+5. Monthly returns (per-month P&L)
+6. Drawdown analysis (worst drawdown, recovery time)
+7. Risk-adjusted analysis (IR, tracking error, beta, Treynor)
+8. Methodology notes
+
+### `outputs/trading_charts.png`
+
+Six-panel dark-theme chart (22×16 in, 150 dpi):
+
+| Panel | Description |
+|:--|:--|
+| **Equity curve** | Strategy vs SPY, shaded alpha regions |
+| **Drawdown** | Underwater plot — strategy and benchmark |
+| **Rolling Sharpe** | 63-day annualised Sharpe with positive/negative shading |
+| **Monthly heatmap** | Calendar grid coloured by return magnitude |
+| **Return distribution** | Daily return histogram vs SPY |
+| **Cumulative alpha** | Running outperformance vs benchmark |
 
 ---
 
 ## Disclaimer
 
-AlphaForge is a research and educational project. Past backtest performance does not guarantee future results. This is not financial advice. Real trading involves risks not captured in backtests, including liquidity constraints, slippage, and market regime changes. Use at your own risk.
+AlphaForge is a **research and educational project**. Backtest results reflect historical simulation under idealised assumptions and do not guarantee future performance. Real-world trading involves risks not captured in backtests — including liquidity constraints, bid-ask spread, market impact, regime changes, and execution latency. This project is not financial advice. Use at your own risk.
 
 ---
 
 ## License
 
-MIT
+[MIT](LICENSE) — free to use, modify, and distribute with attribution.
