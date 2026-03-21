@@ -21,10 +21,11 @@ CHART_PATH  = OUTPUT_DIR / "trading_charts.png"
 
 # ── Universe ───────────────────────────────────────────────────────────────────
 UNIVERSE = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA",
-    "IBM",  "INTC", "JPM",  "BAC",  "JNJ",
-    "UNH",  "XOM",  "PG",   "HD",   "GS",
-    "LLY",  "KO",   "MRK",  "WMT",  "PEP",
+    "AAPL", "MSFT", "AMZN", "NVDA",
+    "IBM", "INTC", "JPM", "BAC", "JNJ",
+    "UNH", "XOM", "PG", "HD", "GS",
+    "LLY", "KO", "MRK", "WMT", "PEP",
+    "AXP"
 ]
 
 BENCHMARK = "SPY"
@@ -32,7 +33,7 @@ BENCHMARK = "SPY"
 # Simulation dates — 2004-01-01 start gives feature indicators enough
 # warmup history before the 2005+ effective trading period.
 # All universe tickers were publicly listed before 2005.
-START_DATE = "2004-01-01"
+START_DATE = "1999-10-01"
 END_DATE   = "2025-12-31"
 
 # Train / test split (most-recent N% used for out-of-sample test)

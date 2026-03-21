@@ -164,7 +164,7 @@ def main():
 
     print_metric("Total samples", f"{X_all.shape[0]:,}")
     print_metric("Input dimension", f"{input_dim} (window={cfg.LOOKBACK_WINDOW} × features={n_feat})")
-    print_metric("Target", "Forward 5-day raw price return")
+    print_metric("Target", f"Forward {cfg.FORWARD_DAYS}-day raw price return")
 
     # Split by DATE (temporal — no future leakage)
     # Safety buffer: each training target uses cfg.FORWARD_DAYS of future prices.
