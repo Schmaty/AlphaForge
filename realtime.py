@@ -17,6 +17,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Any
+from urllib.error import HTTPError, URLError
 from urllib import request as urlrequest
 
 import numpy as np
@@ -171,8 +172,28 @@ class AlpacaClient:
             headers=self.headers,
             method=method.upper(),
         )
-        with urlrequest.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urlrequest.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            raw = ""
+            try:
+                raw = exc.read().decode("utf-8")
+            except Exception:
+                raw = ""
+            msg = f"HTTP {exc.code} {exc.reason}"
+            if raw:
+                try:
+                    err = json.loads(raw)
+                    if isinstance(err, dict):
+                        msg = err.get("message") or err.get("error") or msg
+                except Exception:
+                    msg = f"{msg} | {raw.strip()}"
+            raise RuntimeError(f"Alpaca API request failed ({method.upper()} {path}): {msg}") from exc
+        except URLError as exc:
+            raise RuntimeError(
+                f"Alpaca API request failed ({method.upper()} {path}): {exc.reason}"
+            ) from exc
 
     def get_account(self):
         return self._request("GET", "/v2/account")
@@ -201,6 +222,7 @@ def rebalance_broker(client: AlpacaClient, target_weights: Dict[str, float]):
     current = {p["symbol"]: float(p.get("market_value", 0.0)) for p in positions_raw}
 
     orders = []
+    failures = []
     for sym, w in target_weights.items():
         target_mv = equity * float(w)
         current_mv = current.get(sym, 0.0)
@@ -208,10 +230,26 @@ def rebalance_broker(client: AlpacaClient, target_weights: Dict[str, float]):
         if abs(delta) < max(50.0, 0.001 * equity):
             continue
         side = "buy" if delta > 0 else "sell"
-        order = client.submit_order(sym, abs(delta), side)
-        if order is not None:
-            orders.append(order)
-    return {"equity": equity, "orders_submitted": len(orders), "orders": orders}
+        try:
+            order = client.submit_order(sym, abs(delta), side)
+            if order is not None:
+                orders.append(order)
+        except Exception as exc:
+            failures.append(
+                {
+                    "symbol": sym,
+                    "side": side,
+                    "notional": round(float(abs(delta)), 2),
+                    "error": str(exc),
+                }
+            )
+    return {
+        "equity": equity,
+        "orders_submitted": len(orders),
+        "orders_failed": len(failures),
+        "orders": orders,
+        "failures": failures,
+    }
 
 
 def run_loop(
@@ -256,6 +294,12 @@ def run_loop(
             reb = rebalance_broker(client, out["target_weights"])
             print_metric("Broker equity", f"${reb['equity']:,.2f}")
             print_metric("Orders", reb["orders_submitted"])
+            if reb["orders_failed"] > 0:
+                first = reb["failures"][0]
+                print_metric(
+                    "Order failures",
+                    f"{reb['orders_failed']} (first: {first['symbol']} {first['side']} ${first['notional']:.2f} -> {first['error']})",
+                )
         else:
             print_metric("Execution", "Disabled (mode=signals)")
 
