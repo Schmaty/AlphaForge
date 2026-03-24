@@ -341,8 +341,8 @@ def parse_args():
     p.add_argument("--poll-seconds", type=int, default=cfg.REALTIME_POLL_SECONDS)
     p.add_argument("--period", default=cfg.REALTIME_BAR_PERIOD)
     p.add_argument("--interval", default=cfg.REALTIME_BAR_INTERVAL)
-    p.add_argument("--start-date", default=cfg.START_DATE, help="Use same historical start date style as backtest")
-    p.add_argument("--end-date", default=cfg.END_DATE, help="Use same historical end date style as backtest")
+    p.add_argument("--start-date", default=None, help="Optional explicit start date; leave unset for rolling period")
+    p.add_argument("--end-date", default=None, help="Optional explicit end date; leave unset for rolling period")
     return p.parse_args()
 
 

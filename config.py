@@ -85,6 +85,6 @@ CHART_STYLE = "dark_background"
 
 # ── Realtime Trading Defaults ───────────────────────────────────────────────────
 REALTIME_BAR_INTERVAL = "1d"   # match backtest/training daily timeframe
-REALTIME_BAR_PERIOD   = None   # use start/end window when None
+REALTIME_BAR_PERIOD   = "6mo"  # safer rolling window for feature warmup + lookback
 REALTIME_POLL_SECONDS = 300
 REALTIME_STARTING_CAPITAL = 100000.0
