@@ -174,7 +174,10 @@ class AlpacaClient:
         )
         try:
             with urlrequest.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8")
+                if not raw.strip():
+                    return {}
+                return json.loads(raw)
         except HTTPError as exc:
             raw = ""
             try:
@@ -201,6 +204,9 @@ class AlpacaClient:
     def get_positions(self):
         return self._request("GET", "/v2/positions")
 
+    def close_position(self, symbol: str):
+        return self._request("DELETE", f"/v2/positions/{symbol}")
+
     def submit_order(self, symbol: str, notional_usd: float, side: str):
         if notional_usd < 1.0:
             return None
@@ -214,39 +220,125 @@ class AlpacaClient:
         return self._request("POST", "/v2/orders", payload=payload)
 
 
+def _position_market_value(position: Dict[str, Any]) -> float:
+    """Return signed market value so short positions are treated as negative."""
+    market_value = float(position.get("market_value", 0.0))
+    side = str(position.get("side", "")).lower()
+    if side == "short":
+        return -abs(market_value)
+    return abs(market_value)
+
+
 def rebalance_broker(client: AlpacaClient, target_weights: Dict[str, float]):
-    """Market-order rebalance by notional deltas."""
+    """Rebalance against live Alpaca equity + positions."""
     account = client.get_account()
     equity = float(account.get("equity", 0.0))
     positions_raw = client.get_positions()
-    current = {p["symbol"]: float(p.get("market_value", 0.0)) for p in positions_raw}
+    current = {p["symbol"]: p for p in positions_raw}
+    rebalance_floor = max(50.0, 0.001 * max(equity, 1.0))
+    managed_symbols = {sym for sym, weight in target_weights.items() if float(weight) > 0.0}
 
     orders = []
     failures = []
-    for sym, w in target_weights.items():
-        target_mv = equity * float(w)
-        current_mv = current.get(sym, 0.0)
-        delta = target_mv - current_mv
-        if abs(delta) < max(50.0, 0.001 * equity):
+    actions = []
+
+    # Close positions the model is not managing before adding new exposure.
+    for sym, position in current.items():
+        if sym in managed_symbols:
             continue
-        side = "buy" if delta > 0 else "sell"
+        current_mv = _position_market_value(position)
+        if abs(current_mv) < 1.0:
+            continue
         try:
-            order = client.submit_order(sym, abs(delta), side)
-            if order is not None:
-                orders.append(order)
+            order = client.close_position(sym)
+            orders.append(order)
+            actions.append(
+                {
+                    "symbol": sym,
+                    "action": "close",
+                    "current_market_value": round(current_mv, 2),
+                    "target_market_value": 0.0,
+                    "delta_market_value": round(-current_mv, 2),
+                }
+            )
         except Exception as exc:
             failures.append(
                 {
                     "symbol": sym,
-                    "side": side,
-                    "notional": round(float(abs(delta)), 2),
+                    "action": "close",
+                    "current_market_value": round(current_mv, 2),
+                    "target_market_value": 0.0,
+                    "delta_market_value": round(-current_mv, 2),
                     "error": str(exc),
                 }
             )
+
+    queued = []
+    for sym, w in target_weights.items():
+        target_mv = equity * float(w)
+        current_mv = _position_market_value(current[sym]) if sym in current else 0.0
+        delta = target_mv - current_mv
+        if abs(delta) < rebalance_floor:
+            actions.append(
+                {
+                    "symbol": sym,
+                    "action": "hold",
+                    "current_market_value": round(current_mv, 2),
+                    "target_market_value": round(target_mv, 2),
+                    "delta_market_value": round(delta, 2),
+                }
+            )
+            continue
+        side = "buy" if delta > 0 else "sell"
+        queued.append(
+            {
+                "symbol": sym,
+                "side": side,
+                "notional": round(float(abs(delta)), 2),
+                "current_market_value": round(current_mv, 2),
+                "target_market_value": round(target_mv, 2),
+                "delta_market_value": round(delta, 2),
+            }
+        )
+
+    for item in [x for x in queued if x["side"] == "sell"] + [x for x in queued if x["side"] == "buy"]:
+        try:
+            order = client.submit_order(item["symbol"], item["notional"], item["side"])
+            if order is not None:
+                orders.append(order)
+            actions.append(
+                {
+                    "symbol": item["symbol"],
+                    "action": item["side"],
+                    "current_market_value": item["current_market_value"],
+                    "target_market_value": item["target_market_value"],
+                    "delta_market_value": item["delta_market_value"],
+                }
+            )
+        except Exception as exc:
+            failures.append(
+                {
+                    "symbol": item["symbol"],
+                    "action": item["side"],
+                    "notional": item["notional"],
+                    "current_market_value": item["current_market_value"],
+                    "target_market_value": item["target_market_value"],
+                    "delta_market_value": item["delta_market_value"],
+                    "error": str(exc),
+                }
+            )
+
+    action_summary = {"hold": 0, "buy": 0, "sell": 0, "close": 0}
+    for item in actions:
+        action_summary[item["action"]] = action_summary.get(item["action"], 0) + 1
+
     return {
         "equity": equity,
+        "positions_seen": len(positions_raw),
+        "action_summary": action_summary,
         "orders_submitted": len(orders),
         "orders_failed": len(failures),
+        "actions": actions,
         "orders": orders,
         "failures": failures,
     }
@@ -293,12 +385,17 @@ def run_loop(
         if client is not None:
             reb = rebalance_broker(client, out["target_weights"])
             print_metric("Broker equity", f"${reb['equity']:,.2f}")
+            print_metric("Open positions", reb["positions_seen"])
+            print_metric(
+                "Action summary",
+                ", ".join(f"{k}:{v}" for k, v in reb["action_summary"].items() if v > 0) or "none",
+            )
             print_metric("Orders", reb["orders_submitted"])
             if reb["orders_failed"] > 0:
                 first = reb["failures"][0]
                 print_metric(
                     "Order failures",
-                    f"{reb['orders_failed']} (first: {first['symbol']} {first['side']} ${first['notional']:.2f} -> {first['error']})",
+                    f"{reb['orders_failed']} (first: {first['symbol']} {first['action']} -> {first['error']})",
                 )
         else:
             print_metric("Execution", "Disabled (mode=signals)")
