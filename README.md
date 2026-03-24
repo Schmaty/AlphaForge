@@ -188,6 +188,10 @@ SIGNAL_BLEND         = 0.75   # model signal weight (75% model / 25% equal)
 SIGNAL_SCALE         = 8.0    # softmax temperature for weight differentiation
 TRANSACTION_COST_BPS = 10     # basis points per trade leg
 RISK_FREE_RATE       = 0.04   # annualised, for Sharpe / Sortino / Treynor
+
+# ── Realtime ──────────────────────────────────────────────────
+REALTIME_MARKET_TIMEZONE = "America/New_York"
+REALTIME_RUN_TIMES       = ("09:45", "16:15")  # 15 min after open / close
 ```
 
 ---

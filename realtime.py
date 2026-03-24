@@ -14,11 +14,14 @@ import argparse
 import json
 import os
 import time
+from datetime import datetime, timedelta, time as dt_time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib import request as urlrequest
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -204,6 +207,10 @@ class AlpacaClient:
     def get_positions(self):
         return self._request("GET", "/v2/positions")
 
+    def get_calendar(self, start_date: str, end_date: str):
+        query = urlencode({"start": start_date, "end": end_date})
+        return self._request("GET", f"/v2/calendar?{query}")
+
     def close_position(self, symbol: str):
         return self._request("DELETE", f"/v2/positions/{symbol}")
 
@@ -227,6 +234,62 @@ def _position_market_value(position: Dict[str, Any]) -> float:
     if side == "short":
         return -abs(market_value)
     return abs(market_value)
+
+
+def _parse_hhmm(value: str) -> dt_time:
+    """Parse HH:MM strings used by the realtime schedule."""
+    hour_text, minute_text = value.strip().split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid time: {value!r}")
+    return dt_time(hour=hour, minute=minute)
+
+
+def _calendar_run_slots(client: AlpacaClient, market_tz: ZoneInfo, start_day, end_day):
+    """Build run slots from Alpaca's trading calendar, including early closes."""
+    slots = []
+    for session in client.get_calendar(start_day.isoformat(), end_day.isoformat()):
+        trade_day = datetime.strptime(session["date"], "%Y-%m-%d").date()
+        open_time = _parse_hhmm(session["open"])
+        close_time = _parse_hhmm(session["close"])
+        slots.append(datetime.combine(trade_day, open_time, tzinfo=market_tz) + timedelta(minutes=15))
+        slots.append(datetime.combine(trade_day, close_time, tzinfo=market_tz) + timedelta(minutes=15))
+    return sorted(slots)
+
+
+def _weekday_run_slots(run_times, market_tz: ZoneInfo, start_day, end_day):
+    """Fallback schedule when no exchange calendar is available."""
+    slots = []
+    day = start_day
+    while day <= end_day:
+        if day.weekday() < 5:
+            for run_time in run_times:
+                slots.append(datetime.combine(day, run_time, tzinfo=market_tz))
+        day += timedelta(days=1)
+    return sorted(slots)
+
+
+def next_scheduled_run(now_utc: datetime, market_timezone: str, run_times, client: AlpacaClient = None):
+    """Return the next scheduled runtime in the market timezone."""
+    market_tz = ZoneInfo(market_timezone)
+    now_local = now_utc.astimezone(market_tz)
+    start_day = now_local.date()
+    end_day = start_day + timedelta(days=10)
+
+    slots = []
+    if client is not None:
+        try:
+            slots = _calendar_run_slots(client, market_tz, start_day, end_day)
+        except Exception:
+            slots = []
+    if not slots:
+        slots = _weekday_run_slots(run_times, market_tz, start_day, end_day)
+
+    for slot in slots:
+        if slot >= now_local:
+            return slot
+    return _weekday_run_slots(run_times, market_tz, end_day + timedelta(days=1), end_day + timedelta(days=10))[0]
 
 
 def rebalance_broker(client: AlpacaClient, target_weights: Dict[str, float]):
@@ -344,12 +407,53 @@ def rebalance_broker(client: AlpacaClient, target_weights: Dict[str, float]):
     }
 
 
+def run_live_cycle(
+    bundle: Dict[str, Any],
+    client: AlpacaClient,
+    period: str,
+    interval: str,
+    start_date: str = None,
+    end_date: str = None,
+):
+    """Run one signal-generation and optional broker-rebalance cycle."""
+    print_section("LIVE CYCLE")
+    out = build_live_signals(
+        bundle,
+        period=period,
+        interval=interval,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    print_metric("Timestamp", out["timestamp"])
+    top = sorted(out["signals"].items(), key=lambda kv: kv[1], reverse=True)[:5]
+    print_metric("Top signals", ", ".join(f"{k}:{v:+.4f}" for k, v in top))
+
+    if client is not None:
+        reb = rebalance_broker(client, out["target_weights"])
+        print_metric("Broker equity", f"${reb['equity']:,.2f}")
+        print_metric("Open positions", reb["positions_seen"])
+        print_metric(
+            "Action summary",
+            ", ".join(f"{k}:{v}" for k, v in reb["action_summary"].items() if v > 0) or "none",
+        )
+        print_metric("Orders", reb["orders_submitted"])
+        if reb["orders_failed"] > 0:
+            first = reb["failures"][0]
+            print_metric(
+                "Order failures",
+                f"{reb['orders_failed']} (first: {first['symbol']} {first['action']} -> {first['error']})",
+            )
+    else:
+        print_metric("Execution", "Disabled (mode=signals)")
+
+
 def run_loop(
     bundle_path: Path,
     mode: str,
-    poll_seconds: int,
     period: str,
     interval: str,
+    market_timezone: str,
+    run_times,
     start_date: str = None,
     end_date: str = None,
 ):
@@ -363,44 +467,44 @@ def run_loop(
         print_metric("Date window", f"{start_date or 'None'} -> {end_date or 'None'}")
     else:
         print_metric("Period", period)
-    print_metric("Poll sec", poll_seconds)
+    print_metric("Schedule TZ", market_timezone)
+    print_metric("Run times", ", ".join(t.strftime("%H:%M") for t in run_times))
 
     client = None
     if mode in {"paper", "live"}:
         client = AlpacaClient(mode)
 
+    print_metric("Startup run", "Executing immediate cycle before scheduled runs")
+    run_live_cycle(
+        bundle,
+        client,
+        period,
+        interval,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
     while True:
-        print_section("LIVE CYCLE")
-        out = build_live_signals(
+        next_run = next_scheduled_run(
+            datetime.now(ZoneInfo("UTC")),
+            market_timezone=market_timezone,
+            run_times=run_times,
+            client=client,
+        )
+        sleep_seconds = max(0.0, (next_run - datetime.now(next_run.tzinfo)).total_seconds())
+        print_metric("Next run", next_run.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        if sleep_seconds > 0:
+            print_metric("Sleep sec", f"{int(round(sleep_seconds)):,}")
+            time.sleep(sleep_seconds)
+
+        run_live_cycle(
             bundle,
-            period=period,
-            interval=interval,
+            client,
+            period,
+            interval,
             start_date=start_date,
             end_date=end_date,
         )
-        print_metric("Timestamp", out["timestamp"])
-        top = sorted(out["signals"].items(), key=lambda kv: kv[1], reverse=True)[:5]
-        print_metric("Top signals", ", ".join(f"{k}:{v:+.4f}" for k, v in top))
-
-        if client is not None:
-            reb = rebalance_broker(client, out["target_weights"])
-            print_metric("Broker equity", f"${reb['equity']:,.2f}")
-            print_metric("Open positions", reb["positions_seen"])
-            print_metric(
-                "Action summary",
-                ", ".join(f"{k}:{v}" for k, v in reb["action_summary"].items() if v > 0) or "none",
-            )
-            print_metric("Orders", reb["orders_submitted"])
-            if reb["orders_failed"] > 0:
-                first = reb["failures"][0]
-                print_metric(
-                    "Order failures",
-                    f"{reb['orders_failed']} (first: {first['symbol']} {first['action']} -> {first['error']})",
-                )
-        else:
-            print_metric("Execution", "Disabled (mode=signals)")
-
-        time.sleep(max(1, poll_seconds))
 
 
 def run_api_server(
@@ -479,12 +583,20 @@ def parse_args():
     p.add_argument("--api", action="store_true", help="Run as HTTP API server instead of loop mode")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
-    p.add_argument("--poll-seconds", type=int, default=cfg.REALTIME_POLL_SECONDS)
     p.add_argument("--period", default=cfg.REALTIME_BAR_PERIOD)
     p.add_argument("--interval", default=cfg.REALTIME_BAR_INTERVAL)
+    p.add_argument("--market-timezone", default=cfg.REALTIME_MARKET_TIMEZONE)
+    p.add_argument(
+        "--run-times",
+        nargs="+",
+        default=list(cfg.REALTIME_RUN_TIMES),
+        help="Realtime loop run times in market timezone, e.g. 09:45 16:15",
+    )
     p.add_argument("--start-date", default=None, help="Optional explicit start date; leave unset for rolling period")
     p.add_argument("--end-date", default=None, help="Optional explicit end date; leave unset for rolling period")
-    return p.parse_args()
+    args = p.parse_args()
+    args.run_times = tuple(_parse_hhmm(value) for value in args.run_times)
+    return args
 
 
 def main():
@@ -509,9 +621,10 @@ def main():
         run_loop(
             args.bundle,
             args.mode,
-            args.poll_seconds,
             args.period,
             args.interval,
+            args.market_timezone,
+            args.run_times,
             start_date=args.start_date,
             end_date=args.end_date,
         )
