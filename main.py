@@ -37,6 +37,7 @@ from utils import (
     compute_metrics,
     generate_report,
     plot_charts,
+    save_model_bundle,
     print_header,
     print_section,
     print_metric,
@@ -198,21 +199,31 @@ def main():
     # the global numpy RNG (NumpyMLP uses its own internal RandomState).
     _boot_rng = np.random.RandomState(42)
     models = []
+    model_val_losses = []
     for i in range(cfg.ENSEMBLE_MODELS):
         n = len(X_tr)
         idx = _boot_rng.choice(n, size=int(n * cfg.BOOTSTRAP_RATIO), replace=True)
         X_boot, y_boot = X_tr[idx], y_tr[idx]
         m = train_model(X_boot, y_boot, X_val, y_val, i, cfg)
         models.append(m)
+        val_pred_i = m.predict(X_val)
+        val_diff_i = val_pred_i - y_val
+        val_loss_i = np.mean(np.where(np.abs(val_diff_i) <= 1.0, 0.5 * val_diff_i**2, np.abs(val_diff_i) - 0.5))
+        model_val_losses.append(float(val_loss_i))
 
     print(f"\n  {colour('✓', 'g')}  Ensemble of {colour(str(cfg.ENSEMBLE_MODELS), 'c')} models trained on real historical data.")
+    inv_losses = 1.0 / np.clip(np.array(model_val_losses, dtype=np.float64), 1e-9, None)
+    ensemble_weights = inv_losses / inv_losses.sum()
+    print_metric(
+        "Ensemble weighting",
+        "Validation-loss weighted (better models get higher vote)",
+    )
 
     # ── 6. PREDICTION ────────────────────────────────────────────────────────
     print_section("6. GENERATING PREDICTIONS")
     preds = np.zeros(len(X_test))
-    for m in models:
-        preds += m.predict(X_test)
-    preds /= len(models)
+    for m, w in zip(models, ensemble_weights):
+        preds += w * m.predict(X_test)
 
     # Map back to (date, ticker)
     pred_df = pd.DataFrame({
@@ -280,6 +291,15 @@ def main():
 
     # ── 9. REPORTS & CHARTS ──────────────────────────────────────────────────
     print_section("9. GENERATING OUTPUTS")
+    save_model_bundle(
+        models=models,
+        norm_stats=norm_stats,
+        cfg_mod=cfg,
+        path=cfg.MODEL_BUNDLE_PATH,
+        ensemble_weights=ensemble_weights,
+    )
+    print(f"  ✓  Model bundle  → {cfg.MODEL_BUNDLE_PATH}")
+
     generate_report(metrics, trades, portfolio, cfg.REPORT_PATH, tickers=cfg.UNIVERSE)
     print(f"  ✓  Report  → {cfg.REPORT_PATH}")
 

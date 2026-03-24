@@ -17,6 +17,7 @@ BIAS FIXES vs v1:
 import re as _re
 import sys
 import time
+import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, Dict
@@ -669,6 +670,89 @@ def train_model(X_train, y_train, X_val, y_val, model_idx, cfg):
     print(f"\n    {colour('✓', 'g')}  best val loss {colour(f'{best_val_loss:.6f}', 'w')}")
     model.set_params(best_params)
     return model
+
+
+def save_model_bundle(models, norm_stats, cfg_mod, path, ensemble_weights=None):
+    """
+    Persist trained ensemble + preprocessing state for realtime inference.
+
+    The bundle is intentionally self-contained so a separate runtime process
+    can load it without retraining.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    model_state = []
+    for m in models:
+        layer_sizes = [m.layers[0]["W"].shape[0]]
+        for layer in m.layers:
+            layer_sizes.append(layer["W"].shape[1])
+        model_state.append({
+            "layer_sizes": layer_sizes,
+            "activation": m.activation_name,
+            "dropout": float(m.dropout),
+            "params": m.get_params(),
+        })
+
+    if ensemble_weights is None or len(ensemble_weights) != len(models):
+        ensemble_weights = np.ones(len(models), dtype=np.float64) / max(len(models), 1)
+    else:
+        ew = np.array(ensemble_weights, dtype=np.float64)
+        ew = np.clip(ew, 1e-12, None)
+        ensemble_weights = ew / ew.sum()
+
+    serial_norm_stats = {}
+    for t, (mu, sigma) in norm_stats.items():
+        serial_norm_stats[t] = {"mu": mu, "sigma": sigma}
+
+    bundle = {
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "model_state": model_state,
+        "norm_stats": serial_norm_stats,
+        "ensemble_weights": np.array(ensemble_weights, dtype=np.float64),
+        "settings": {
+            "universe": list(getattr(cfg_mod, "UNIVERSE", [])),
+            "lookback_window": int(getattr(cfg_mod, "LOOKBACK_WINDOW", 40)),
+            "forward_days": int(getattr(cfg_mod, "FORWARD_DAYS", 3)),
+            "signal_scale": float(getattr(cfg_mod, "SIGNAL_SCALE", 8.0)),
+            "signal_blend": float(getattr(cfg_mod, "SIGNAL_BLEND", 0.75)),
+            "max_position_pct": float(getattr(cfg_mod, "MAX_POSITION_PCT", 0.20)),
+            "rebalance_days": int(getattr(cfg_mod, "REBALANCE_DAYS", 3)),
+        },
+    }
+    with path.open("wb") as f:
+        pickle.dump(bundle, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_model_bundle(path):
+    """Load a persisted model bundle and reconstruct NumPy MLP objects."""
+    path = Path(path)
+    with path.open("rb") as f:
+        bundle = pickle.load(f)
+
+    models = []
+    for i, state in enumerate(bundle["model_state"]):
+        model = NumpyMLP(
+            state["layer_sizes"],
+            activation=state.get("activation", "leaky_relu"),
+            dropout=float(state.get("dropout", 0.0)),
+            seed=42 + i,
+        )
+        model.set_params(state["params"])
+        models.append(model)
+
+    norm_stats = {}
+    for t, stats in bundle["norm_stats"].items():
+        norm_stats[t] = (stats["mu"], stats["sigma"])
+
+    out = {
+        "models": models,
+        "norm_stats": norm_stats,
+        "ensemble_weights": np.array(bundle.get("ensemble_weights", np.ones(len(models)) / max(len(models), 1))),
+        "settings": bundle.get("settings", {}),
+        "created_at": bundle.get("created_at"),
+    }
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

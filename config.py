@@ -18,14 +18,15 @@ OUTPUT_DIR  = _BASE / "outputs"
 DATA_DIR    = _BASE / "data"
 REPORT_PATH = OUTPUT_DIR / "trading_report.txt"
 CHART_PATH  = OUTPUT_DIR / "trading_charts.png"
+MODEL_BUNDLE_PATH = OUTPUT_DIR / "model_bundle.pkl"
 
 # ── Universe ───────────────────────────────────────────────────────────────────
-UNIVERSE = [
-    "AAPL", "MSFT", "AMZN", "NVDA",
-    "IBM", "INTC", "JPM", "BAC", "JNJ",
-    "UNH", "XOM", "PG", "HD", "GS",
-    "LLY", "KO", "MRK", "WMT", "PEP",
-    "AXP"
+UNIVERSE = [ 
+    "AAPL", "MSFT", "AMZN", "NVDA", 
+    "IBM", "INTC", "JPM", "BAC", 
+    "JNJ", "UNH", "XOM", "PG", 
+    "HD", "GS", "LLY", "KO", 
+    "MRK", "WMT", "PEP", "AXP" 
 ]
 
 BENCHMARK = "SPY"
@@ -37,7 +38,7 @@ START_DATE = "1999-10-01"
 END_DATE   = "2025-12-31"
 
 # Train / test split (most-recent N% used for out-of-sample test)
-TEST_SPLIT = 0.40
+TEST_SPLIT = 0.50
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 LOOKBACK_WINDOW = 40   # trading days of history fed to the model as features
@@ -81,3 +82,9 @@ RISK_FREE_RATE = 0.04  # annual risk-free rate for Sharpe / Sortino / Treynor
 # ── Reporting ──────────────────────────────────────────────────────────────────
 CHART_DPI   = 150
 CHART_STYLE = "dark_background"
+
+# ── Realtime Trading Defaults ───────────────────────────────────────────────────
+REALTIME_BAR_INTERVAL = "1d"   # match backtest/training daily timeframe
+REALTIME_BAR_PERIOD   = None   # use start/end window when None
+REALTIME_POLL_SECONDS = 300
+REALTIME_STARTING_CAPITAL = 100000.0
