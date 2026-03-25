@@ -21,12 +21,12 @@ CHART_PATH  = OUTPUT_DIR / "trading_charts.png"
 MODEL_BUNDLE_PATH = OUTPUT_DIR / "model_bundle.pkl"
 
 # ── Universe ───────────────────────────────────────────────────────────────────
-UNIVERSE = [ 
-    "AAPL", "MSFT", "AMZN", "NVDA", 
-    "IBM", "INTC", "JPM", "BAC", 
-    "JNJ", "UNH", "XOM", "PG", 
-    "HD", "GS", "LLY", "KO", 
-    "MRK", "WMT", "PEP", "AXP" 
+UNIVERSE = [
+    "NVDA", "MSFT", "AAPL", "META",
+    "GOOGL", "AMZN", "AVGO", "TSM",
+    "LLY", "UNH", "V", "MA",
+    "COST", "NFLX", "CRM", "AMD",
+    "ISRG", "NOW", "UBER", "GE",
 ]
 
 BENCHMARK = "SPY"
@@ -87,4 +87,39 @@ CHART_STYLE = "dark_background"
 REALTIME_BAR_INTERVAL = "1d"   # match backtest/training daily timeframe
 REALTIME_BAR_PERIOD   = "1y"  # safer rolling window for feature warmup + lookback
 REALTIME_MARKET_TIMEZONE = "America/New_York"
-REALTIME_RUN_TIMES = ("09:45", "16:15")  # 15 min after regular open and close
+REALTIME_RUN_TIMES = ("09:45", "12:00", "15:30")  # morning, midday, pre-close
+
+# ── Realtime Risk Management ─────────────────────────────────────────────────
+RT_STOP_LOSS_PCT           = 0.05   # close position if it drops 5% from entry
+RT_TRAILING_STOP_PCT       = 0.03   # trailing stop: lock in gains at 3% from peak
+RT_TRAILING_STOP_ACTIVATE  = 0.02   # only activate trailing stop after 2% gain
+RT_TAKE_PROFIT_PCT         = 0.15   # take profit at 15% gain
+RT_MAX_DRAWDOWN_HALT       = 0.08   # halt all trading if portfolio drops 8% from peak
+RT_DRAWDOWN_COOLDOWN_HOURS = 24     # hours to wait after drawdown halt before resuming
+RT_MIN_SIGNAL_STRENGTH     = 0.008  # ignore signals weaker than this
+RT_STRONG_SIGNAL_THRESHOLD = 0.025  # scale up position for signals above this
+
+# ── Realtime Signal Enhancement ──────────────────────────────────────────────
+RT_SIGNAL_SMOOTHING        = 3      # EMA smoothing of signals across cycles
+RT_ENSEMBLE_AGREEMENT_MIN  = 0.6    # fraction of models that must agree on direction
+RT_VOL_SCALE_ENABLED       = True   # scale position size inversely with volatility
+RT_VOL_LOOKBACK_DAYS       = 20     # days for realtime volatility calculation
+RT_VOL_TARGET              = 0.15   # target annualized vol for position sizing
+RT_CASH_BUFFER_PCT         = 0.05   # keep 5% in cash for opportunities / margin
+
+# ── Realtime Entry Timing ─────────────────────────────────────────────────────
+RT_ENTRY_SCORE_MIN         = 0.4    # minimum entry quality score (0-1) to actually buy
+RT_RSI_OVERBOUGHT          = 72     # don't enter longs above this RSI
+RT_RSI_OVERSOLD            = 30     # ideal long entry zone below this RSI
+RT_BB_UPPER_AVOID          = 0.90   # don't enter longs when price is above 90% of BB range
+RT_MACD_CONFIRM_REQUIRED   = True   # require MACD histogram to confirm signal direction
+RT_VOLUME_CONFIRM_MIN      = 0.8    # min volume ratio (vs 20d avg) to confirm entry
+
+# ── AI Position Review ───────────────────────────────────────────────────────
+RT_AI_EXIT_ENABLED         = True   # use model to decide whether to hold each position
+RT_AI_EXIT_SIGNAL_FLIP     = -0.005 # exit if model prediction flips this far negative
+RT_AI_EXIT_DECAY_CYCLES    = 4      # exit if signal decays for this many consecutive cycles
+RT_POSITION_RANK_REALLOC   = True   # reallocate from weak positions to strong ones
+
+# ── Realtime State Persistence ───────────────────────────────────────────────
+RT_STATE_PATH = OUTPUT_DIR / "realtime_state.json"
