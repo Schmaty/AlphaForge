@@ -1,149 +1,169 @@
 ================================================================================
                   AI STOCK TRADER — REAL DATA BACKTEST REPORT                   
-                         Generated: 2026-03-25 09:59:08                         
+                         Generated: 2026-03-27 11:54:01                         
 ================================================================================
 
 1. EXECUTIVE SUMMARY
 ------------------------------------------------------------
   Verdict:              BEAT the S&P 500
-  Alpha:                +114.20%
-  Strategy Return:      207.53%
-  Benchmark Return:     93.33%
-  Strategy Sharpe:      1.566
-  Benchmark Sharpe:     1.105
+  Alpha vs SPY:         +679.61%
+  Strategy Return:      755.43%
+  S&P 500 Return:       75.81%
+  EW Buy & Hold Return: 91.97%
+  Alpha vs EW B&H:      +663.46%
+  Strategy Sharpe:      0.762
+  Benchmark Sharpe:     0.569
+  EW B&H Sharpe:        0.701
 
-  Universe:             NVDA, MSFT, AAPL, META, GOOGL, AMZN, AVGO, TSM, LLY, UNH, V, MA, COST, NFLX, CRM, AMD, ISRG, NOW, UBER, GE
-  Number of stocks:     20
+  Universe:             AAPL, MSFT, AMZN, GOOGL, META, INTC, CSCO, ORCL, IBM, QCOM, TXN, AVGO, ADBE, CRM, HPQ, DELL, JPM, BAC, WFC, C, GS, MS, AXP, BLK, SCHW, XOM, CVX, COP, SLB, EOG, PSX, VLO, JNJ, PFE, MRK, ABBV, BMY, GILD, AMGN, TMO, DHR, KO, PEP, PG, WMT, COST, MCD, NKE, SBUX, HD, LOW, V, MA, DIS, CMCSA, T, VZ, UPS, NVDA
+  Number of stocks:     59
 
 2. DETAILED METRICS
 ------------------------------------------------------------
-  Strategy CAGR                     41.96%
-  Benchmark CAGR                    22.83%
-  Strategy Volatility               21.30%
-  Benchmark Volatility              16.19%
-  Strategy Sortino                   2.3455
-  Benchmark Sortino                  1.5492
-  Strategy Max DD                  -22.08%
-  Benchmark Max DD                 -18.76%
-  Strategy Calmar                    1.9000
-  Benchmark Calmar                   1.2170
+  Strategy CAGR                     59.99%
+  Benchmark CAGR                    13.15%
+  Strategy Volatility              112.84%
+  Benchmark Volatility              17.36%
+  Strategy Sortino                   1.4592
+  Benchmark Sortino                  0.7794
+  Strategy Max DD                  -85.72%
+  Benchmark Max DD                 -24.50%
+  Strategy Calmar                    0.6998
+  Benchmark Calmar                   0.5368
 
 3. TRADE STATISTICS
 ------------------------------------------------------------
-  Total Trades:         2,395
-  Positive Days:        57.1%  (daily portfolio return > 0)
-  Daily Profit Factor:  1.36  (sum gains / sum losses)
-  Avg Trade Size:       0.8619%  (% of initial capital)
+  Total Trades:         7,217
+  Positive Days:        52.9%  (daily portfolio return > 0)
+  Daily Profit Factor:  1.30  (sum gains / sum losses)
+  Avg Trade Size:       16.9362%  (% of initial capital)
 
 4. RECENT TRADES (last 40)
 ------------------------------------------------------------
   Date         Ticker   Side       Shares    Price ($)
   ──────────── ──────── ────── ────────── ────────────
-  2025-12-10   AVGO     SELL        61.18      $411.32
-  2025-12-10   LLY      BUY          9.40      $991.98
-  2025-12-10   UNH      SELL        48.12      $325.84
-  2025-12-10   NFLX     BUY        107.37       $92.71
-  2025-12-10   AMD      SELL        36.46      $221.42
-  2025-12-10   ISRG     BUY         22.05      $555.92
-  2025-12-10   UBER     BUY        137.75       $84.16
-  2025-12-15   NVDA     BUY         34.96      $176.28
-  2025-12-15   MSFT     SELL        20.01      $473.74
-  2025-12-15   AVGO     BUY         88.04      $338.45
-  2025-12-15   TSM      BUY         50.37      $286.93
-  2025-12-15   LLY      SELL        11.20    $1,060.42
-  2025-12-15   UNH      BUY         35.32      $338.47
-  2025-12-15   V        SELL        34.44      $346.18
-  2025-12-15   MA       SELL        23.33      $568.28
-  2025-12-15   NOW      BUY         81.39      $153.04
-  2025-12-15   GE       SELL        44.89      $300.20
-  2025-12-18   NVDA     SELL        60.42      $174.13
-  2025-12-18   GOOGL    BUY         25.67      $302.25
-  2025-12-18   AVGO     BUY         81.23      $328.56
-  2025-12-18   TSM      SELL        34.15      $283.88
-  2025-12-18   UNH      SELL        31.12      $325.61
-  2025-12-18   CRM      SELL        29.19      $257.85
-  2025-12-18   AMD      BUY         53.06      $201.06
-  2025-12-18   ISRG     SELL        22.80      $561.89
-  2025-12-18   NOW      BUY         43.79      $153.38
-  2025-12-23   MSFT     BUY         33.02      $485.74
-  2025-12-23   AAPL     BUY         34.51      $272.11
-  2025-12-23   GOOGL    SELL        38.26      $314.13
-  2025-12-23   AVGO     SELL       173.38      $348.59
-  2025-12-23   TSM      SELL        46.60      $296.12
-  2025-12-23   LLY      BUY          9.79    $1,069.85
-  2025-12-23   UNH      BUY         46.04      $322.29
-  2025-12-23   V        BUY         41.78      $352.65
-  2025-12-23   MA       BUY         21.39      $575.49
-  2025-12-23   COST     BUY          9.38      $853.62
-  2025-12-23   NFLX     SELL        68.34       $93.50
-  2025-12-23   CRM      BUY         47.40      $263.43
-  2025-12-23   AMD      SELL        59.56      $214.90
-  2025-12-23   ISRG     BUY         12.03      $577.34
+  2025-12-11   IBM      BUY       1073.82      $308.98
+  2025-12-11   MRK      SELL     15127.24       $97.45
+  2025-12-11   TMO      BUY        277.28      $577.89
+  2025-12-11   DHR      BUY        555.36      $232.05
+  2025-12-12   AAPL     SELL       535.17      $278.02
+  2025-12-15   AMZN     SELL      1438.75      $222.54
+  2025-12-15   GOOGL    SELL       934.67      $308.00
+  2025-12-15   INTC     SELL      5471.85       $37.51
+  2025-12-15   IBM      SELL      1325.63      $306.91
+  2025-12-15   AVGO     BUY       3106.02      $338.45
+  2025-12-15   DELL     BUY       7946.46      $129.94
+  2025-12-15   TMO      SELL       662.15      $575.34
+  2025-12-16   AMZN     BUY       1406.54      $222.56
+  2025-12-16   GOOGL    BUY        836.87      $306.35
+  2025-12-16   CSCO     SELL     16662.75       $77.14
+  2025-12-16   IBM      BUY        751.29      $301.46
+  2025-12-16   AVGO     BUY       1193.00      $339.94
+  2025-12-16   DELL     BUY       1800.07      $133.17
+  2025-12-16   TMO      BUY        407.02      $569.60
+  2025-12-17   AMZN     SELL       691.38      $221.27
+  2025-12-17   GS       BUY       1354.13      $867.76
+  2025-12-17   TMO      SELL       192.25      $562.00
+  2025-12-17   DHR      SELL      1222.23      $222.32
+  2025-12-18   GOOGL    SELL       765.57      $302.25
+  2025-12-18   INTC     SELL      2921.89       $36.28
+  2025-12-18   AVGO     SELL       544.33      $328.56
+  2025-12-18   MRK      BUY      11915.31       $99.95
+  2025-12-18   UPS      SELL      1330.88      $100.68
+  2025-12-19   INTC     BUY       3849.81       $36.82
+  2025-12-19   ORCL     BUY       1149.57      $191.46
+  2025-12-22   GOOGL    SELL       417.98      $309.56
+  2025-12-22   ORCL     SELL       688.99      $197.86
+  2025-12-22   AVGO     SELL      3759.87      $340.74
+  2025-12-22   AMGN     BUY       3339.38      $329.11
+  2025-12-22   TMO      SELL       262.69      $575.13
+  2025-12-22   VZ       BUY      28079.32       $39.30
+  2025-12-23   IBM      SELL       799.80      $302.06
+  2025-12-23   JNJ      SELL      1908.10      $204.69
+  2025-12-23   BMY      BUY      20581.22       $53.65
+  2025-12-23   DHR      SELL       647.71      $230.51
 
 5. MONTHLY RETURNS
 ------------------------------------------------------------
   Month          Return
   ────────── ──────────
-  2022-11       +10.53%
-  2022-12        -6.33%
-  2023-01       +13.11%
-  2023-02        -1.31%
-  2023-03        +9.49%
-  2023-04        +1.79%
-  2023-05       +12.09%
-  2023-06        +7.14%
-  2023-07        +2.32%
-  2023-08        -1.92%
-  2023-09        -3.78%
-  2023-10        +0.13%
-  2023-11       +13.93%
-  2023-12        +4.07%
-  2024-01        +7.17%
-  2024-02        +8.75%
-  2024-03        +1.46%
-  2024-04        -3.71%
-  2024-05        +6.07%
-  2024-06       +10.83%
-  2024-07        -2.40%
-  2024-08        +4.04%
-  2024-09        +1.72%
-  2024-10        -1.65%
-  2024-11        +4.34%
-  2024-12        -0.67%
-  2025-01        +5.80%
-  2025-02        -1.69%
-  2025-03        -7.97%
-  2025-04        +1.57%
-  2025-05        +6.04%
-  2025-06        +6.75%
-  2025-07        -0.18%
-  2025-08        +0.71%
-  2025-09        +4.09%
-  2025-10        +5.96%
-  2025-11        -1.32%
-  2025-12        +0.32%
+  2021-06        +2.18%
+  2021-07        +1.51%
+  2021-08        +2.25%
+  2021-09        -3.78%
+  2021-10        +7.25%
+  2021-11        -2.38%
+  2021-12        +4.68%
+  2022-01        -1.14%
+  2022-02        -4.52%
+  2022-03        +7.97%
+  2022-04        -9.72%
+  2022-05        +6.13%
+  2022-06       -14.76%
+  2022-07       +14.13%
+  2022-08        -0.99%
+  2022-09       -26.53%
+  2022-10       +38.32%
+  2022-11       +18.99%
+  2022-12       -10.83%
+  2023-01       +16.67%
+  2023-02        -9.86%
+  2023-03       +19.18%
+  2023-04        +2.20%
+  2023-05        +0.68%
+  2023-06       +20.35%
+  2023-07       +19.26%
+  2023-08        -2.62%
+  2023-09       -13.68%
+  2023-10       -10.95%
+  2023-11       +39.57%
+  2023-12       +13.65%
+  2024-01       +16.46%
+  2024-02       +17.85%
+  2024-03       +10.82%
+  2024-04       -16.13%
+  2024-05       +18.43%
+  2024-06        +7.61%
+  2024-07        +3.28%
+  2024-08        +2.60%
+  2024-09        +7.30%
+  2024-10        -5.86%
+  2024-11       +22.42%
+  2024-12       -11.19%
+  2025-01       +17.95%
+  2025-02        -0.85%
+  2025-03       -34.77%
+  2025-04       -14.99%
+  2025-05       +33.44%
+  2025-06       +29.29%
+  2025-07        +4.29%
+  2025-08       +21.80%
+  2025-09        +8.51%
+  2025-10        +9.18%
+  2025-11        -1.65%
+  2025-12        +9.44%
 
 6. DRAWDOWN ANALYSIS
 ------------------------------------------------------------
-  Worst Drawdown:       -22.08% on 2025-04-08
-  Recovery:             80 days
+  Worst Drawdown:       -85.72% on 2025-04-08
+  Recovery:             126 days
 
 7. RISK-ADJUSTED ANALYSIS
 ------------------------------------------------------------
-  Information Ratio:    2.089  (ann. active return / tracking error)
-  Tracking Error:       9.16%  (annualized)
-  Beta:                 1.206  (vs SPY)
-  Treynor Ratio:        0.315  ((CAGR - rf) / beta)
-  Return/MaxDD:         9.40
+  Information Ratio:    0.459  (ann. active return / tracking error)
+  Tracking Error:       102.12%  (annualized)
+  Beta:                 4.324  (vs SPY)
+  Treynor Ratio:        0.129  ((CAGR - rf) / beta)
+  Return/MaxDD:         8.81
 
 8. METHODOLOGY
 ------------------------------------------------------------
   Data:                 REAL historical prices (yfinance)
   Benchmark:            SPY (S&P 500 ETF)
   Normalisation:        Train-only Z-scoring (no look-ahead)
-  Target:               Raw forward 5-day price return
+  Target:               Raw forward 3-day price return
   Model:                Ensemble MLP (pure NumPy, Adam optimiser)
-  Rebalancing:          Weekly, fully invested, softmax weights
+  Rebalancing:          Every 1 day(s), fully invested, softmax weights
   Costs:                10 bps per trade
 
 ================================================================================

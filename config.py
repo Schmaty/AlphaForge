@@ -22,11 +22,13 @@ MODEL_BUNDLE_PATH = OUTPUT_DIR / "model_bundle.pkl"
 
 # ── Universe ───────────────────────────────────────────────────────────────────
 UNIVERSE = [
-    "NVDA", "MSFT", "AAPL", "META",
-    "GOOGL", "AMZN", "AVGO", "TSM",
-    "LLY", "UNH", "V", "MA",
-    "COST", "NFLX", "CRM", "AMD",
-    "ISRG", "NOW", "UBER", "GE",
+"AAPL","MSFT","AMZN","GOOGL","META","INTC","CSCO","ORCL","IBM","QCOM",
+"TXN","AVGO","ADBE","CRM","HPQ","DELL",
+"JPM","BAC","WFC","C","GS","MS","AXP","BLK","SCHW",
+"XOM","CVX","COP","SLB","EOG","PSX","VLO",
+"JNJ","PFE","MRK","ABBV","BMY","GILD","AMGN","TMO","DHR",
+"KO","PEP","PG","WMT","COST","MCD","NKE","SBUX","HD","LOW",
+"V","MA","DIS","CMCSA","T","VZ","UPS","NVDA"
 ]
 
 BENCHMARK = "SPY"
@@ -42,7 +44,7 @@ TEST_SPLIT = 0.50
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 LOOKBACK_WINDOW = 40   # trading days of history fed to the model as features
-FORWARD_DAYS    = 3    # forward return horizon for target (prediction horizon)
+FORWARD_DAYS    = 3    # forward return horizon for target
 
 # ── Neural Network (pure-NumPy MLP) ───────────────────────────────────────────
 HIDDEN_LAYERS = (256, 128, 64)  # neurons per hidden layer (tuple — immutable)
@@ -51,7 +53,7 @@ ACTIVATION    = "leaky_relu"    # "relu" | "leaky_relu" | "tanh" | "elu"
 
 # Training
 EPOCHS              = 60
-BATCH_SIZE          = 128
+BATCH_SIZE          = 64
 LEARNING_RATE       = 6e-4
 WEIGHT_DECAY        = 1e-5
 LR_DECAY            = 0.993     # per-epoch multiplicative LR decay
@@ -65,16 +67,23 @@ BOOTSTRAP_RATIO = 0.88  # fraction of train data each model sees
 # ── Signal & Position Sizing ──────────────────────────────────────────────────
 SIGNAL_THRESHOLD = 0.005    # minimum predicted score to trigger trade
 POSITION_SIZING  = "risk_parity"  # "equal" | "risk_parity" | "momentum"
-MAX_POSITION_PCT = 0.20     # max weight per ticker (20%)
-REBALANCE_DAYS   = 3        # trading days between rebalances
-SIGNAL_BLEND     = 0.75     # model signal weight (75% model / 25% equal)
-SIGNAL_SCALE     = 8.0      # sharper softmax differentiation
+MAX_POSITION_PCT = 0.50     # max weight per ticker — let winners concentrate
+REBALANCE_DAYS   = 15       # less churn, let winners run longer
+SIGNAL_BLEND     = 0.92     # 92% model / 8% equal — trust the model more
+SIGNAL_SCALE     = 15.0     # aggressive softmax — concentrate in top picks
+TOP_N_HOLDINGS   = 7        # concentrate portfolio in top N stocks by signal
+TOP_N_SHARE      = 0.85     # top N stocks get 85% of portfolio weight
 
 # ── Risk Management ───────────────────────────────────────────────────────────
-STOP_LOSS_PCT          = 0.06
-TAKE_PROFIT_PCT        = 0.18
-MAX_PORTFOLIO_DRAWDOWN = 0.12
-TRANSACTION_COST_BPS   = 10   # basis points per trade leg
+STOP_LOSS_PCT          = 0.08
+TAKE_PROFIT_PCT        = 0.50   # high TP — don't cut winners early
+MAX_PORTFOLIO_DRAWDOWN = 0.15
+TRANSACTION_COST_BPS   = 10    # basis points per trade leg
+
+# ── Momentum Overlay (backtest) ─────────────────────────────────────────
+MOMENTUM_BOOST         = True   # boost signals for stocks with strong momentum
+MOMENTUM_BOOST_WINDOW  = 60    # lookback days for momentum scoring
+MOMENTUM_BOOST_SCALE   = 3.0   # max multiplier for strong positive momentum
 
 # ── Financial Parameters ──────────────────────────────────────────────────────
 RISK_FREE_RATE = 0.04  # annual risk-free rate for Sharpe / Sortino / Treynor
@@ -123,3 +132,21 @@ RT_POSITION_RANK_REALLOC   = True   # reallocate from weak positions to strong o
 
 # ── Realtime State Persistence ───────────────────────────────────────────────
 RT_STATE_PATH = OUTPUT_DIR / "realtime_state.json"
+
+# ── Day Trading Micro-Model ────────────────────────────────────────────
+DAY_MODEL_PATH       = OUTPUT_DIR / "day_model.pkl"
+DAY_MODEL_HIDDEN     = (64, 32)         # small + fast
+DAY_MODEL_EPOCHS     = 40
+DAY_MODEL_LR         = 5e-4
+DAY_MODEL_BATCH      = 64
+DAY_MODEL_ENABLED    = True             # use day model for entry/exit overlay
+DAY_ENTRY_THRESHOLD  = 0.3             # min entry_score to trigger buy
+DAY_EXIT_THRESHOLD   = -0.3            # exit_score below this triggers sell
+DAY_TP_WEIGHT        = 0.6             # blend: 60% day model TP, 40% fixed TP
+DAY_SL_WEIGHT        = 0.6             # blend: 60% day model SL, 40% fixed SL
+
+# ── Adaptive Backtest Parameters ────────────────────────────────────────
+ADAPTIVE_STOP_LOSS   = True            # ATR-based stop loss instead of fixed %
+ADAPTIVE_TAKE_PROFIT = False           # disabled — let winners run
+REGIME_FILTER        = True            # reduce exposure in bear markets
+MOMENTUM_FILTER_DAYS = 20              # skip stocks with negative N-day momentum

@@ -542,10 +542,22 @@ def build_live_signals(
     if state is not None:
         state.update_signal_history(raw_preds)
 
+    # Load day trading micro-model if available
+    day_model_bundle = None
+    if getattr(cfg, 'DAY_MODEL_ENABLED', False):
+        try:
+            from src.day_model import load_day_model, generate_day_signals
+            day_model_path = getattr(cfg, 'DAY_MODEL_PATH', None)
+            if day_model_path and Path(day_model_path).exists():
+                day_model_bundle = load_day_model(day_model_path)
+        except Exception:
+            pass  # day model not available, continue without it
+
     # Apply signal filtering + entry timing
     filtered_signals = {}
     signal_meta = {}
     entry_scores = {}
+    day_signals = {}
     for t in tickers:
         raw_sig = raw_preds[t]
 
@@ -617,7 +629,36 @@ def build_live_signals(
         # 9) Entry timing bonus/penalty — good timing boosts signal, bad reduces it
         timing_mult = 0.7 + 0.6 * entry_timing["score"]  # range: 0.7x to 1.3x
 
-        final_signal = smoothed * vol_adj * regime_adj * conviction * timing_mult
+        # 10) Day trading micro-model overlay
+        day_mult = 1.0
+        day_sig = None
+        if day_model_bundle is not None:
+            try:
+                day_sig = generate_day_signals(day_model_bundle, live[t])
+                day_signals[t] = day_sig
+
+                # Blend day model entry score with ensemble signal
+                day_entry = day_sig["entry_score"]
+                day_w = getattr(cfg, 'DAY_TP_WEIGHT', 0.6)
+
+                if is_new_position:
+                    # For new entries, day model has strong veto/boost power
+                    if day_sig["should_enter"] and smoothed > 0:
+                        day_mult = 1.0 + 0.4 * day_entry  # boost up to 1.4x
+                    elif day_sig["should_exit"]:
+                        day_mult = 0.2  # almost block entry
+                    else:
+                        day_mult = 0.7 + 0.3 * max(0, day_entry)
+                else:
+                    # For existing positions, use day model for exit signals
+                    if day_sig["should_exit"]:
+                        day_mult = 0.4  # reduce weight significantly
+                    elif day_sig["should_enter"]:
+                        day_mult = 1.2  # hold/add confidence
+            except Exception:
+                pass  # day model failed, ignore
+
+        final_signal = smoothed * vol_adj * regime_adj * conviction * timing_mult * day_mult
         filtered_signals[t] = final_signal
         signal_meta[t] = {
             "raw": raw_sig,
@@ -629,6 +670,8 @@ def build_live_signals(
             "entry_score": entry_timing["score"],
             "entry_reason": entry_timing["reason"],
             "timing_mult": round(timing_mult, 3),
+            "day_model_mult": round(day_mult, 3),
+            "day_entry_score": round(day_sig["entry_score"], 4) if day_sig else None,
             "action": "active",
         }
 
@@ -658,6 +701,7 @@ def build_live_signals(
         "ticker_vols": ticker_vols,
         "live_data": live,            # pass through for AI review
         "raw_features": raw_features,  # pass through for AI review
+        "day_signals": day_signals,    # day model entry/exit/TP/SL
     }
 
 
@@ -754,8 +798,9 @@ def check_position_risk(
     client: AlpacaClient,
     state: TradingState,
     latest_prices: Dict[str, float],
+    day_signals: Dict[str, Dict] = None,
 ) -> Dict[str, List[Dict]]:
-    """Check all positions for stop-loss, trailing stop, and take-profit triggers."""
+    """Check all positions for stop-loss, trailing stop, take-profit, and day model exit triggers."""
     positions_raw = client.get_positions()
     exits = []
     updates = []
@@ -784,19 +829,33 @@ def check_position_risk(
         peak_price = tracked.get("peak_price", avg_entry)
         drawdown_from_peak = (peak_price - current_price) / peak_price if peak_price > 0 else 0
 
+        # Get adaptive TP/SL from day model if available
+        day_sig = (day_signals or {}).get(sym)
+        if day_sig and getattr(cfg, 'DAY_MODEL_ENABLED', False):
+            day_w = getattr(cfg, 'DAY_SL_WEIGHT', 0.6)
+            sl_pct = day_w * day_sig.get("sl_pct", cfg.RT_STOP_LOSS_PCT) + (1 - day_w) * cfg.RT_STOP_LOSS_PCT
+            tp_pct = day_w * day_sig.get("tp_pct", cfg.RT_TAKE_PROFIT_PCT) + (1 - day_w) * cfg.RT_TAKE_PROFIT_PCT
+        else:
+            sl_pct = cfg.RT_STOP_LOSS_PCT
+            tp_pct = cfg.RT_TAKE_PROFIT_PCT
+
         reason = None
 
-        # 1) Hard stop-loss
-        if unrealized_pct <= -cfg.RT_STOP_LOSS_PCT:
-            reason = f"stop_loss ({unrealized_pct:+.2%} vs -{cfg.RT_STOP_LOSS_PCT:.0%})"
+        # 1) Hard stop-loss (adaptive when day model available)
+        if unrealized_pct <= -sl_pct:
+            reason = f"stop_loss ({unrealized_pct:+.2%} vs -{sl_pct:.1%})"
 
-        # 2) Take-profit
-        elif unrealized_pct >= cfg.RT_TAKE_PROFIT_PCT:
-            reason = f"take_profit ({unrealized_pct:+.2%} vs +{cfg.RT_TAKE_PROFIT_PCT:.0%})"
+        # 2) Take-profit (adaptive when day model available)
+        elif unrealized_pct >= tp_pct:
+            reason = f"take_profit ({unrealized_pct:+.2%} vs +{tp_pct:.1%})"
 
         # 3) Trailing stop (only if position has gained enough to activate)
         elif unrealized_pct >= cfg.RT_TRAILING_STOP_ACTIVATE and drawdown_from_peak >= cfg.RT_TRAILING_STOP_PCT:
             reason = f"trailing_stop (peak {peak_price:.2f}, drop {drawdown_from_peak:.2%})"
+
+        # 4) Day model exit signal
+        elif day_sig and day_sig.get("should_exit", False) and unrealized_pct < 0.01:
+            reason = f"day_model_exit (entry_score={day_sig['entry_score']:+.3f})"
 
         if reason:
             exits.append({

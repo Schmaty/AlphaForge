@@ -196,10 +196,9 @@ def test_walk_forward(quick=False):
     n_folds = 3 if quick else 5
     fold_size = len(common) // (n_folds + 2)
 
-    # Use a local config copy to avoid mutating the shared module-level config,
-    # which would corrupt any subsequent call in the same process.
-    import copy
-    wf_cfg = copy.copy(cfg)
+    # Use a simple namespace to avoid mutating the shared module-level config.
+    import types
+    wf_cfg = types.SimpleNamespace(**{k: getattr(cfg, k) for k in dir(cfg) if not k.startswith('_')})
     wf_cfg.EPOCHS = 15 if quick else 30
     wf_cfg.ENSEMBLE_MODELS = 1
 
@@ -364,12 +363,12 @@ def test_sensitivity():
     thresholds = [0.005, 0.01, 0.02, 0.03, 0.05]
     sizings = ["equal", "risk_parity", "momentum"]
 
-    import copy
+    import types
     results = []
 
     for th in thresholds:
         for sz in sizings:
-            sens_cfg = copy.copy(cfg)
+            sens_cfg = types.SimpleNamespace(**{k: getattr(cfg, k) for k in dir(cfg) if not k.startswith('_')})
             sens_cfg.SIGNAL_THRESHOLD = th
             sens_cfg.POSITION_SIZING = sz
             try:

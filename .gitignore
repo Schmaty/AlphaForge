@@ -3,6 +3,8 @@
 .claude-flow
 __pycache__
 *.pyc
+.codex
 
 # Downloaded market data — regenerate with yfinance, do not commit
 data/*.csv
+outputs/realtime_state.json

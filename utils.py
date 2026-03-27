@@ -759,18 +759,44 @@ def load_model_bundle(path):
 #  BACKTESTING ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_backtest(predictions, prices, benchmark, cfg_mod):
+def run_backtest(predictions, prices, benchmark, cfg_mod,
+                 ohlcv_data=None, day_bundle=None):
     """
     Fully-invested portfolio backtest on real stock prices.
-    The model determines WEIGHTS across tickers (long-only with tilts).
-    Rebalances weekly. Includes transaction costs.
+    Enhanced with:
+      - Adaptive ATR-based stop-loss / take-profit per position
+      - Market regime filter (reduce exposure in downtrends)
+      - Momentum filter (skip stocks with negative momentum)
+      - Day model entry/exit overlay (when day_bundle provided)
     """
     tickers = predictions.columns.tolist()
     dates = predictions.index
     n_tickers = len(tickers)
     cost_mult = cfg_mod.TRANSACTION_COST_BPS / 10_000
 
+    # Prepare day model if available
+    use_day_model = day_bundle is not None and ohlcv_data is not None
+    if use_day_model:
+        from src.day_model import CandleFeatureExtractor
+        _day_model = day_bundle["model"]
+        _day_mu = day_bundle["norm_stats"]["mu"]
+        _day_sigma = day_bundle["norm_stats"]["sigma"]
+        _day_extractor = CandleFeatureExtractor()
+        # Pre-build OHLCV frames for each ticker
+        _ohlcv_frames = {}
+        for t in tickers:
+            _ohlcv_frames[t] = pd.DataFrame({
+                "Open": ohlcv_data["Open"][t],
+                "High": ohlcv_data["High"][t],
+                "Low": ohlcv_data["Low"][t],
+                "Close": ohlcv_data["Close"][t],
+                "Volume": ohlcv_data["Volume"][t],
+            })
+        day_entry_thresh = getattr(cfg_mod, 'DAY_ENTRY_THRESHOLD', 0.3)
+        day_exit_thresh = getattr(cfg_mod, 'DAY_EXIT_THRESHOLD', -0.3)
+
     initial_capital = 1_000_000.0
+    cash = 0.0  # persistent cash ledger
     holdings = {}
     equal_w = 1.0 / n_tickers
     for t in tickers:
@@ -778,9 +804,20 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
         alloc = initial_capital * equal_w
         holdings[t] = alloc / price
 
+    # Track per-position entry prices and peaks for adaptive stops
+    entry_prices = {t: float(prices.loc[dates[0], t]) for t in tickers}
+    peak_prices = dict(entry_prices)
+
     portfolio_values = []
     trade_log = []
     rebal_counter = 0
+
+    # Precompute daily returns for regime detection
+    bench_rets = benchmark.pct_change()
+    use_regime = getattr(cfg_mod, 'REGIME_FILTER', False)
+    use_adaptive_sl = getattr(cfg_mod, 'ADAPTIVE_STOP_LOSS', False)
+    use_adaptive_tp = getattr(cfg_mod, 'ADAPTIVE_TAKE_PROFIT', False)
+    mom_days = getattr(cfg_mod, 'MOMENTUM_FILTER_DAYS', 20)
 
     for i, date in enumerate(dates):
         if date not in prices.index:
@@ -788,30 +825,236 @@ def run_backtest(predictions, prices, benchmark, cfg_mod):
 
         port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers)
 
+        # -- Regime filter: scale down in bearish markets --
+        regime_scale = 1.0
+        if use_regime and i >= 50:
+            # Use 50-day benchmark trend
+            bench_slice = benchmark.loc[:date].iloc[-50:]
+            if len(bench_slice) >= 50:
+                bench_trend = bench_slice.iloc[-1] / bench_slice.iloc[0] - 1
+                bench_vol = bench_rets.loc[:date].iloc[-20:].std() * np.sqrt(252)
+                if bench_trend < -0.05:
+                    regime_scale = 0.5  # halve exposure in bear
+                elif bench_trend < -0.02 and bench_vol > 0.20:
+                    regime_scale = 0.7  # reduce in volatile downtrend
+                elif bench_trend > 0.05 and bench_vol < 0.15:
+                    regime_scale = 1.15  # slight boost in calm uptrend
+
+        # -- Per-position adaptive risk signals --
+        # Build penalty multipliers for stocks that hit stop/TP thresholds.
+        # These feed into the rebalancing step to reduce bad positions and
+        # reallocate to strong ones — no direct selling here (avoids cash leak).
+        risk_penalties = {}
+        if i >= 10:
+            for t in tickers:
+                cur_price = float(prices.loc[date, t])
+                entry_p = entry_prices.get(t, cur_price)
+                peak_p = peak_prices.get(t, cur_price)
+
+                if cur_price > peak_p:
+                    peak_prices[t] = cur_price
+                    peak_p = cur_price
+
+                if entry_p <= 0:
+                    continue
+
+                unrealized = (cur_price - entry_p) / entry_p
+                drawdown_from_peak = (peak_p - cur_price) / peak_p if peak_p > 0 else 0
+
+                atr_pct = 0.03
+                if use_adaptive_sl or use_adaptive_tp:
+                    price_slice = prices[t].loc[:date].iloc[-20:]
+                    if len(price_slice) >= 5:
+                        daily_range = price_slice.pct_change().abs().mean()
+                        atr_pct = max(daily_range * 2.5, 0.015)
+
+                sl_thresh = atr_pct * 4.0 if use_adaptive_sl else cfg_mod.STOP_LOSS_PCT
+                sl_thresh = max(sl_thresh, 0.10)  # never tighter than 10%
+                tp_thresh = atr_pct * 6.0 if use_adaptive_tp else cfg_mod.TAKE_PROFIT_PCT
+                tp_thresh = max(tp_thresh, 0.20)  # never less than 20%
+
+                # Only penalize on extreme risk events
+                if unrealized <= -sl_thresh:
+                    risk_penalties[t] = 0.4  # reduce allocation
+                elif unrealized >= tp_thresh:
+                    risk_penalties[t] = 0.5  # partial profit take
+
+        # -- Rebalance --
         rebal_counter += 1
-        if rebal_counter >= getattr(cfg_mod, 'REBALANCE_DAYS', 5) and i < len(dates) - 1:
+        rebal_freq = getattr(cfg_mod, 'REBALANCE_DAYS', 5)
+
+        if rebal_counter >= rebal_freq and i < len(dates) - 1:
             rebal_counter = 0
-            signals = predictions.loc[date]
+            signals = predictions.loc[date].copy()
+
+            # Momentum overlay: penalize losers AND boost winners
+            use_mom_boost = getattr(cfg_mod, 'MOMENTUM_BOOST', False)
+            mom_boost_window = getattr(cfg_mod, 'MOMENTUM_BOOST_WINDOW', 60)
+            mom_boost_scale = getattr(cfg_mod, 'MOMENTUM_BOOST_SCALE', 2.0)
+
+            if mom_days > 0 or use_mom_boost:
+                lookback = max(mom_days, mom_boost_window) if use_mom_boost else mom_days
+                for t in tickers:
+                    price_hist = prices[t].loc[:date].iloc[-lookback:]
+                    if len(price_hist) >= 20:
+                        mom_short = price_hist.iloc[-1] / price_hist.iloc[-mom_days:].iloc[0] - 1 if len(price_hist) >= mom_days else 0
+                        mom_long = price_hist.iloc[-1] / price_hist.iloc[0] - 1
+
+                        # Penalize only strong negative momentum
+                        if mom_short < -0.12:
+                            signals[t] *= 0.2
+                        elif mom_short < -0.06:
+                            signals[t] *= 0.5
+
+                        # Boost positive momentum — key to beating B&H
+                        if use_mom_boost and mom_long > 0:
+                            boost = 1.0 + min(mom_long / 0.3, 1.0) * (mom_boost_scale - 1.0)
+                            signals[t] *= boost
+
+            # Day model overlay: adjust signals based on candle pattern analysis
+            # Use data up to the *previous* day to avoid same-bar lookahead
+            if use_day_model:
+                for t in tickers:
+                    prev_dates = _ohlcv_frames[t].loc[:date].index
+                    if len(prev_dates) < 2:
+                        continue
+                    prev_date = prev_dates[-2]  # last fully-known bar
+                    ohlcv_slice = _ohlcv_frames[t].loc[:prev_date].iloc[-60:]
+                    if len(ohlcv_slice) < 30:
+                        continue
+                    try:
+                        feats = _day_extractor.extract(ohlcv_slice)
+                        if feats.empty:
+                            continue
+                        x = feats.iloc[-1:].values.astype(np.float64)
+                        x = (x - _day_mu) / _day_sigma
+                        x = np.nan_to_num(x, 0.0)
+                        pred = _day_model.predict(x)[0]
+                        entry_score = float(pred[0])
+
+                        # Blend day model with ensemble signal
+                        if entry_score > day_entry_thresh:
+                            signals[t] *= 1.0 + entry_score  # boost by up to 2x
+                        elif entry_score < day_exit_thresh:
+                            signals[t] *= max(0.1, 1.0 + entry_score)  # suppress
+                    except Exception:
+                        pass
+
             target_w = _signal_to_weights(signals, tickers, cfg_mod)
 
+            # Apply risk penalties: reduce weight for stopped-out positions,
+            # redistribute to stronger ones
+            if risk_penalties:
+                freed_weight = 0.0
+                non_penalized = []
+                for t in tickers:
+                    penalty = risk_penalties.get(t, 1.0)
+                    if penalty < 1.0:
+                        freed_weight += target_w[t] * (1.0 - penalty)
+                        target_w[t] *= penalty
+                    else:
+                        non_penalized.append(t)
+                # Redistribute freed weight to non-penalized positions
+                if non_penalized and freed_weight > 0:
+                    bonus = freed_weight / len(non_penalized)
+                    for t in non_penalized:
+                        target_w[t] += bonus
+                # Re-normalize
+                total_w = sum(target_w.values())
+                if total_w > 0:
+                    target_w = {t: w / total_w for t, w in target_w.items()}
+
+            # Apply regime filter: in bearish markets, shift weight toward
+            # stocks with positive momentum rather than reducing total exposure
+            # (no cash tracking in this backtest, so we stay fully invested)
+            if use_regime and regime_scale < 1.0:
+                # Instead of going to cash, give extra weight to winners
+                ticker_mom = {}
+                for t in tickers:
+                    ph = prices[t].loc[:date].iloc[-20:]
+                    ticker_mom[t] = ph.iloc[-1] / ph.iloc[0] - 1 if len(ph) >= 20 else 0
+                winners = [t for t in tickers if ticker_mom.get(t, 0) > 0]
+                if winners:
+                    # Shift 20% from losers to winners in bear markets
+                    shift = 0.2 * (1 - regime_scale)
+                    for t in tickers:
+                        if ticker_mom.get(t, 0) <= 0:
+                            target_w[t] *= (1 - shift)
+                    freed = sum(target_w.values())
+                    for t in winners:
+                        target_w[t] *= 1.0 / freed  # renormalize through winners
+                # Always renormalize to sum to 1.0
+                total_w = sum(target_w.values())
+                if total_w > 0:
+                    target_w = {t: w / total_w for t, w in target_w.items()}
+
+            # CASH-CONSTRAINED DRIFT TOLERANCE
+            # Pass 1: identify which positions to freeze (drifted winners)
+            # and which to rebalance. Frozen positions keep their current
+            # weight; remaining weight is redistributed among the rest.
+            hard_max = cfg_mod.MAX_POSITION_PCT * 2.0
+            frozen = {}   # ticker → current_weight (locked in)
+            rebal_pool = []  # tickers that participate in rebalance
             for t in tickers:
-                price = prices.loc[date, t]
+                price = float(prices.loc[date, t])
+                current_w = (holdings[t] * price) / port_val if port_val > 0 else 0
                 target_shares = (port_val * target_w[t]) / price
                 diff_shares = target_shares - holdings[t]
+                signal_val = float(signals.get(t, 0.0))
 
-                if abs(diff_shares * price) > port_val * 0.002:
-                    trade_cost = abs(diff_shares * price) * cost_mult
-                    port_val -= trade_cost
-                    holdings[t] = target_shares
-                    side = "BUY" if diff_shares > 0 else "SELL"
-                    trade_log.append((date, t, side, diff_shares, price))
+                # Freeze winners: don't sell if signal positive and under hard max
+                if diff_shares < 0 and signal_val > 0 and current_w < hard_max:
+                    frozen[t] = current_w
+                else:
+                    rebal_pool.append(t)
 
-        port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers)
+            # Pass 2: redistribute remaining weight among non-frozen tickers
+            frozen_weight = sum(frozen.values())
+            available_weight = max(1.0 - frozen_weight, 0.0)
+
+            if rebal_pool and available_weight > 0:
+                # Re-normalize target weights for rebalanceable tickers only
+                pool_raw = {t: target_w[t] for t in rebal_pool}
+                pool_total = sum(pool_raw.values())
+                if pool_total > 0:
+                    pool_w = {t: w / pool_total * available_weight
+                              for t, w in pool_raw.items()}
+                else:
+                    eq = available_weight / len(rebal_pool)
+                    pool_w = {t: eq for t in rebal_pool}
+
+                for t in rebal_pool:
+                    price = float(prices.loc[date, t])
+                    target_shares = (port_val * pool_w[t]) / price
+                    diff_shares = target_shares - holdings[t]
+
+                    if abs(diff_shares * price) > port_val * 0.002:
+                        trade_cost = abs(diff_shares * price) * cost_mult
+                        # Cash ledger: selling adds cash, buying spends cash
+                        trade_value = diff_shares * price  # positive = buy, negative = sell
+                        cash -= trade_value   # buy: cash decreases; sell: cash increases
+                        cash -= trade_cost    # costs always reduce cash
+                        holdings[t] = target_shares
+                        side = "BUY" if diff_shares > 0 else "SELL"
+                        trade_log.append((date, t, side, diff_shares, price))
+
+                        if diff_shares > 0:
+                            entry_prices[t] = price
+                            peak_prices[t] = price
+
+        port_val = sum(holdings[t] * prices.loc[date, t] for t in tickers) + cash
         portfolio_values.append({"date": date, "portfolio": port_val})
 
     pv = pd.DataFrame(portfolio_values).set_index("date")
     pv["benchmark"] = benchmark.reindex(pv.index).ffill()
     pv["benchmark"] = pv["benchmark"] / pv["benchmark"].iloc[0] * initial_capital
+
+    # Equal-weight buy-and-hold: invest equally in all tickers at start, never rebalance
+    ew_prices = prices.reindex(pv.index).ffill()
+    # Each ticker gets equal $ at start; track via normalised price ratios
+    ew_start = ew_prices.iloc[0]
+    ew_growth = ew_prices.div(ew_start, axis=1)          # each col: price / start price
+    pv["equal_weight_bh"] = ew_growth.mean(axis=1) * initial_capital
 
     trades = pd.DataFrame(trade_log, columns=["date", "ticker", "side", "shares", "price"])
     return pv, trades
@@ -821,21 +1064,38 @@ def _signal_to_weights(signals, tickers, cfg_mod):
     """
     Convert model signals to portfolio weights.
     Always fully invested (weights sum to 1.0).
+
+    Uses a top-N concentration approach:
+    - Top TOP_N stocks get the bulk of the portfolio (via softmax)
+    - Remaining stocks get a small base allocation
+    - This naturally concentrates into the model's best picks
     """
     n = len(tickers)
-    base_w = 1.0 / n
-
+    top_n = getattr(cfg_mod, 'TOP_N_HOLDINGS', max(5, n // 3))
     scores = np.array([signals.get(t, 0.0) for t in tickers])
 
-    # Softmax-like transformation for weight tilts
-    scale = getattr(cfg_mod, 'SIGNAL_SCALE', 5.0)
-    scores_scaled = np.clip(scale * scores, -20, 20)
-    exp_scores = np.exp(scores_scaled)
-    model_weights = exp_scores / exp_scores.sum()
+    # Rank stocks by signal strength
+    ranked_idx = np.argsort(-scores)  # highest first
+    top_idx = set(ranked_idx[:top_n])
 
-    # Blend: equal weight + model signal
-    blend = getattr(cfg_mod, 'SIGNAL_BLEND', 0.60)
-    final_weights = (1 - blend) * base_w + blend * model_weights
+    # Concentration: top stocks get 85% of portfolio, rest get 15%
+    top_share = getattr(cfg_mod, 'TOP_N_SHARE', 0.85)
+    bottom_share = 1.0 - top_share
+
+    # Softmax among top stocks for relative weighting
+    top_scores = scores[ranked_idx[:top_n]]
+    scale = getattr(cfg_mod, 'SIGNAL_SCALE', 15.0)
+    top_scaled = np.clip(scale * top_scores, -20, 20)
+    top_exp = np.exp(top_scaled)
+    top_weights = top_exp / top_exp.sum() * top_share
+
+    # Equal weight for bottom stocks
+    n_bottom = n - top_n
+    bottom_w = bottom_share / n_bottom if n_bottom > 0 else 0
+
+    final_weights = np.full(n, bottom_w)
+    for j, idx in enumerate(ranked_idx[:top_n]):
+        final_weights[idx] = top_weights[j]
 
     final_weights = np.clip(final_weights, 0.005, cfg_mod.MAX_POSITION_PCT)
     final_weights = final_weights / final_weights.sum()
@@ -847,41 +1107,41 @@ def _signal_to_weights(signals, tickers, cfg_mod):
 #  PORTFOLIO METRICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _series_metrics(series, rf, years):
+    """Compute return/risk metrics for a single equity curve Series."""
+    ret = series.iloc[-1] / series.iloc[0] - 1
+    daily = series.pct_change().dropna()
+    vol = daily.std() * np.sqrt(252)
+    cagr = (1 + ret) ** (1 / max(years, 0.01)) - 1
+    sharpe = (daily.mean() * 252 - rf) / max(vol, 1e-10)
+    down_vol = daily[daily < 0].std() * np.sqrt(252)
+    sortino = (daily.mean() * 252 - rf) / max(down_vol, 1e-10)
+    pk = series.cummax()
+    max_dd = ((series - pk) / pk).min()
+    calmar = cagr / abs(max_dd) if max_dd != 0 else 0
+    return {
+        "return": ret, "cagr": cagr, "sharpe": sharpe,
+        "sortino": sortino, "max_dd": max_dd, "vol": vol,
+        "calmar": calmar, "daily": daily,
+    }
+
+
 def compute_metrics(portfolio, trades, rf=0.04):
     strat = portfolio["portfolio"]
     bench = portfolio["benchmark"]
     days = len(strat)
     years = days / 252
 
-    strat_ret = strat.iloc[-1] / strat.iloc[0] - 1
-    bench_ret = bench.iloc[-1] / bench.iloc[0] - 1
+    sm = _series_metrics(strat, rf, years)
+    bm = _series_metrics(bench, rf, years)
 
-    sd = strat.pct_change().dropna()
-    bd = bench.pct_change().dropna()
+    # Equal-weight buy-and-hold metrics (if present)
+    ew = None
+    if "equal_weight_bh" in portfolio.columns:
+        ew = _series_metrics(portfolio["equal_weight_bh"], rf, years)
 
-    sv = sd.std() * np.sqrt(252)
-    bv = bd.std() * np.sqrt(252)
-
-    sc = (1 + strat_ret) ** (1 / max(years, 0.01)) - 1
-    bc = (1 + bench_ret) ** (1 / max(years, 0.01)) - 1
-
-    ss = (sd.mean() * 252 - rf) / max(sv, 1e-10)
-    bs = (bd.mean() * 252 - rf) / max(bv, 1e-10)
-
-    sn = sd[sd < 0].std() * np.sqrt(252)
-    bn = bd[bd < 0].std() * np.sqrt(252)
-    s_sort = (sd.mean() * 252 - rf) / max(sn, 1e-10)
-    b_sort = (bd.mean() * 252 - rf) / max(bn, 1e-10)
-
-    def mdd(s):
-        pk = s.cummax()
-        return ((s - pk) / pk).min()
-
-    sm = mdd(strat)
-    bm = mdd(bench)
-
-    s_cal = sc / abs(sm) if sm != 0 else 0
-    b_cal = bc / abs(bm) if bm != 0 else 0
+    sd = sm["daily"]
+    bd = bm["daily"]
 
     # Beta (market sensitivity)
     common_idx = sd.index.intersection(bd.index)
@@ -893,37 +1153,36 @@ def compute_metrics(portfolio, trades, rf=0.04):
     # Tracking error and Information Ratio (both annualized)
     active_daily = sd_aligned - bd_aligned
     te = active_daily.std() * np.sqrt(252)
-    ir = (sc - bc) / max(te, 1e-10)
+    ir = (sm["cagr"] - bm["cagr"]) / max(te, 1e-10)
 
     # Treynor Ratio: annualized excess return per unit of market risk
-    treynor = (sc - rf) / abs(beta) if abs(beta) > 1e-4 else 0.0
+    treynor = (sm["cagr"] - rf) / abs(beta) if abs(beta) > 1e-4 else 0.0
 
     # Win rate and profit factor based on daily portfolio returns
-    # (trade-level P&L is not tracked; daily returns are the reliable measure)
     sd_pos = sd[sd > 0]
     sd_neg = sd[sd < 0]
-    wr = len(sd_pos) / max(len(sd), 1)   # fraction of positive-return days
+    wr = len(sd_pos) / max(len(sd), 1)
     gp = sd_pos.sum()
     gl = abs(sd_neg.sum())
-    pf = gp / max(gl, 1e-10)             # sum(gains) / sum(losses) on daily returns
+    pf = gp / max(gl, 1e-10)
 
     nt = len(trades)
     if nt > 0:
         tv = trades["shares"].abs() * trades["price"]
-        ar = tv.mean() / max(strat.iloc[0], 1)   # avg trade size as % of initial capital
+        ar = tv.mean() / max(strat.iloc[0], 1)
     else:
         ar = 0.0
 
     rs = (sd.rolling(63).mean() * 252 - rf) / (sd.rolling(63).std() * np.sqrt(252)).replace(0, 1)
 
-    return {
-        "strategy_return": strat_ret, "benchmark_return": bench_ret,
-        "strategy_cagr": sc, "benchmark_cagr": bc,
-        "strategy_sharpe": ss, "benchmark_sharpe": bs,
-        "strategy_sortino": s_sort, "benchmark_sortino": b_sort,
-        "strategy_max_dd": sm, "benchmark_max_dd": bm,
-        "strategy_vol": sv, "benchmark_vol": bv,
-        "strategy_calmar": s_cal, "benchmark_calmar": b_cal,
+    result = {
+        "strategy_return": sm["return"], "benchmark_return": bm["return"],
+        "strategy_cagr": sm["cagr"], "benchmark_cagr": bm["cagr"],
+        "strategy_sharpe": sm["sharpe"], "benchmark_sharpe": bm["sharpe"],
+        "strategy_sortino": sm["sortino"], "benchmark_sortino": bm["sortino"],
+        "strategy_max_dd": sm["max_dd"], "benchmark_max_dd": bm["max_dd"],
+        "strategy_vol": sm["vol"], "benchmark_vol": bm["vol"],
+        "strategy_calmar": sm["calmar"], "benchmark_calmar": bm["calmar"],
         "win_rate": wr, "profit_factor": pf,
         "total_trades": nt, "avg_trade_size": ar,
         "beta": beta, "tracking_error": te,
@@ -931,12 +1190,23 @@ def compute_metrics(portfolio, trades, rf=0.04):
         "rolling_sharpe": rs, "strat_daily": sd, "bench_daily": bd,
     }
 
+    # Add equal-weight buy-and-hold metrics if available
+    if ew is not None:
+        result.update({
+            "ew_return": ew["return"], "ew_cagr": ew["cagr"],
+            "ew_sharpe": ew["sharpe"], "ew_sortino": ew["sortino"],
+            "ew_max_dd": ew["max_dd"], "ew_vol": ew["vol"],
+            "ew_calmar": ew["calmar"], "ew_daily": ew["daily"],
+        })
+
+    return result
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  REPORT GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def generate_report(metrics, trades, portfolio, path, tickers=None):
+def generate_report(metrics, trades, portfolio, path, tickers=None, cfg_mod=None):
     L = []
     w = 80
     L.append("=" * w)
@@ -950,11 +1220,17 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     L.append("\n1. EXECUTIVE SUMMARY")
     L.append("-" * 60)
     L.append(f"  Verdict:              {'BEAT' if beat else 'UNDERPERFORMED'} the S&P 500")
-    L.append(f"  Alpha:                {alpha:+.2%}")
+    L.append(f"  Alpha vs SPY:         {alpha:+.2%}")
     L.append(f"  Strategy Return:      {metrics['strategy_return']:.2%}")
-    L.append(f"  Benchmark Return:     {metrics['benchmark_return']:.2%}")
+    L.append(f"  S&P 500 Return:       {metrics['benchmark_return']:.2%}")
+    if "ew_return" in metrics:
+        ew_alpha = metrics['strategy_return'] - metrics['ew_return']
+        L.append(f"  EW Buy & Hold Return: {metrics['ew_return']:.2%}")
+        L.append(f"  Alpha vs EW B&H:      {ew_alpha:+.2%}")
     L.append(f"  Strategy Sharpe:      {metrics['strategy_sharpe']:.3f}")
     L.append(f"  Benchmark Sharpe:     {metrics['benchmark_sharpe']:.3f}")
+    if "ew_sharpe" in metrics:
+        L.append(f"  EW B&H Sharpe:        {metrics['ew_sharpe']:.3f}")
 
     if tickers:
         L.append(f"\n  Universe:             {', '.join(tickers)}")
@@ -1033,11 +1309,14 @@ def generate_report(metrics, trades, portfolio, path, tickers=None):
     L.append("-" * 60)
     L.append("  Data:                 REAL historical prices (yfinance)")
     L.append("  Benchmark:            SPY (S&P 500 ETF)")
+    _fwd = getattr(cfg_mod, 'FORWARD_DAYS', '?') if cfg_mod else '?'
+    _rebal = getattr(cfg_mod, 'REBALANCE_DAYS', '?') if cfg_mod else '?'
+    _cost_bps = getattr(cfg_mod, 'TRANSACTION_COST_BPS', '?') if cfg_mod else '?'
     L.append("  Normalisation:        Train-only Z-scoring (no look-ahead)")
-    L.append("  Target:               Raw forward 5-day price return")
+    L.append(f"  Target:               Raw forward {_fwd}-day price return")
     L.append("  Model:                Ensemble MLP (pure NumPy, Adam optimiser)")
-    L.append("  Rebalancing:          Weekly, fully invested, softmax weights")
-    L.append("  Costs:                10 bps per trade")
+    L.append(f"  Rebalancing:          Every {_rebal} day(s), fully invested, softmax weights")
+    L.append(f"  Costs:                {_cost_bps} bps per trade")
 
     L.append("\n" + "=" * w)
     L.append("END OF REPORT".center(w))
@@ -1059,17 +1338,20 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
 
     plt.style.use(cfg_mod.CHART_STYLE)
     fig, axes = plt.subplots(3, 2, figsize=(22, 16))
-    fig.suptitle("AI Stock Trader — Real Data Backtest (vs S&P 500)",
+    fig.suptitle("AI Stock Trader — Real Data Backtest",
                  fontsize=20, fontweight="bold", color="white", y=0.98)
 
     strat = portfolio["portfolio"]
     bench = portfolio["benchmark"]
+    ew_bh = portfolio.get("equal_weight_bh")
     sd = metrics["strat_daily"]
     bd = metrics["bench_daily"]
 
     ax = axes[0, 0]
     ax.plot(strat.index, strat / 1e6, color="#00ff88", lw=1.8, label="AI Strategy")
     ax.plot(bench.index, bench / 1e6, color="#ff6666", lw=1.3, alpha=0.8, label="S&P 500 (SPY)")
+    if ew_bh is not None:
+        ax.plot(ew_bh.index, ew_bh / 1e6, color="#ffaa00", lw=1.3, alpha=0.8, ls="--", label="EW Buy & Hold")
     ax.fill_between(strat.index, strat / 1e6, bench / 1e6,
                     where=strat > bench, color="#00ff88", alpha=0.08)
     ax.fill_between(strat.index, strat / 1e6, bench / 1e6,
@@ -1078,7 +1360,8 @@ def plot_charts(portfolio, trades, metrics, path, cfg_mod):
     ax.legend(framealpha=0.3, fontsize=10)
     ax.set_ylabel("Portfolio ($M)")
     ax.grid(alpha=0.15)
-    stats_text = (f"Return: {metrics['strategy_return']:.1%} vs {metrics['benchmark_return']:.1%}\n"
+    ew_line = f"\nEW B&H: {metrics.get('ew_return', 0):.1%}" if "ew_return" in metrics else ""
+    stats_text = (f"AI: {metrics['strategy_return']:.1%}  SPY: {metrics['benchmark_return']:.1%}{ew_line}\n"
                   f"Sharpe: {metrics['strategy_sharpe']:.2f}  |  Sortino: {metrics['strategy_sortino']:.2f}\n"
                   f"Max DD: {metrics['strategy_max_dd']:.1%}  |  Calmar: {metrics['strategy_calmar']:.2f}")
     ax.text(0.02, 0.97, stats_text, transform=ax.transAxes, fontsize=8,
